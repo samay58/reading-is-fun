@@ -38,7 +38,8 @@ export interface ChunkReadyEvent extends BaseStreamEvent {
   type: 'chunk_ready';
   index: number;
   total: number;
-  audioUrl: string;
+  audioUrl?: string; // Deprecated: kept for backward compatibility
+  audioData: string; // Base64-encoded MP3 data
   duration: number; // Estimated duration in seconds
   charCount: number;
 }

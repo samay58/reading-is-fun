@@ -4,6 +4,17 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Play, Pause, Download, ChevronLeft } from 'lucide-react';
 import type { StreamEvent, ChunkReadyEvent } from '@/lib/streaming/types';
 
+// Helper to convert base64 to Blob
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const byteCharacters = atob(base64);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  return new Blob([byteArray], { type: mimeType });
+}
+
 interface StreamingPlayerProps {
   documentId: string;
   fileName: string;
@@ -101,8 +112,14 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Streami
 
     return () => {
       aborted = true;
+      // Clean up blob URLs to prevent memory leaks
+      chunks.forEach(chunk => {
+        if (chunk?.audioUrl) {
+          URL.revokeObjectURL(chunk.audioUrl);
+        }
+      });
     };
-  }, [documentId, file]);
+  }, [documentId, file, chunks]);
 
   const handleStreamEvent = (event: StreamEvent) => {
     switch (event.type) {
@@ -147,9 +164,13 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Streami
   };
 
   const handleChunkReady = (event: ChunkReadyEvent) => {
+    // Convert base64 audio data to blob URL
+    const audioBlob = base64ToBlob(event.audioData, 'audio/mpeg');
+    const blobUrl = URL.createObjectURL(audioBlob);
+
     const newChunk: AudioChunk = {
       index: event.index,
-      audioUrl: event.audioUrl,
+      audioUrl: blobUrl,
       duration: event.duration,
       status: 'ready',
     };
@@ -162,10 +183,10 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Streami
 
     // Auto-play first chunk when ready
     if (event.index === 0 && !isPlaying && audioRef.current) {
-      audioRef.current.src = event.audioUrl;
+      audioRef.current.src = blobUrl;
       audioRef.current.play()
         .then(() => setIsPlaying(true))
-        .catch(err => console.error('Auto-play failed:', err));
+        .catch(err => console.error('Play failed:', err));
     }
   };
 

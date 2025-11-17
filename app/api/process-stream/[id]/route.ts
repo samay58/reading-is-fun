@@ -168,8 +168,10 @@ export async function POST(
           console.log(`[${id}] Generating audio for chunk ${i + 1}/${totalChunks}...`);
           const audioPath = await generateAudio(chunkText, `${id}-chunk-${i}`);
 
-          // Move the audio to our chunks directory
+          // Read the audio file as buffer
           const chunkBuffer = await import('fs/promises').then(fs => fs.readFile(audioPath));
+
+          // Save to chunk manager for final concatenation
           await chunkManager.saveChunk(i, chunkBuffer);
 
           // Clean up temp file
@@ -179,19 +181,22 @@ export async function POST(
           const duration = estimateChunkDuration(chunkText);
           totalDuration += duration;
 
-          // Send chunk ready event
+          // Encode audio as base64 for inline transmission
+          const audioBase64 = chunkBuffer.toString('base64');
+
+          // Send chunk ready event with embedded audio data
           const chunkReadyEvent: StreamEvent = {
             type: 'chunk_ready',
             index: i,
             total: totalChunks,
-            audioUrl: chunkManager.getChunkUrl(i),
+            audioData: audioBase64, // Send base64-encoded audio inline
             duration,
             charCount: chunkText.length,
             timestamp: Date.now(),
           };
           controller.enqueue(encoder.encode(chunkReadyEvent));
 
-          chunkAudioUrls.push(chunkManager.getChunkUrl(i));
+          chunkAudioUrls.push(`chunk-${i}`);
         }
 
         // Step 6: Generate concatenated file in background (for download)
