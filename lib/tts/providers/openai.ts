@@ -35,16 +35,9 @@ export class OpenAIProvider implements TTSProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      // Test with a minimal request
-      const testText = 'test';
-      await this.client.audio.speech.create({
-        model: this.model,
-        voice: this.defaultVoice,
-        input: testText,
-        response_format: 'mp3',
-        speed: 1.0
-      });
-      return true;
+      // Simple check: if we have an API key, assume available
+      // Don't make actual API calls in availability check (wasteful)
+      return !!this.client.apiKey;
     } catch (error) {
       console.error('OpenAI TTS availability check failed:', error);
       return false;

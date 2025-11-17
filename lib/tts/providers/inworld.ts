@@ -59,24 +59,9 @@ export class InworldProvider implements TTSProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
-      // Test with a minimal synthesis request
-      const response = await fetch(`${this.baseUrl}/voice`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${this.apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          text: 'test',
-          voice_id: this.defaultVoice,
-          model_id: 'inworld-tts-1-max',
-          audio_config: {
-            audio_encoding: 'MP3'
-          }
-        })
-      });
-
-      return response.ok;
+      // Simple check: if we have API key and workspace ID, assume available
+      // Don't make actual API calls in availability check (wasteful and slow)
+      return !!(this.apiKey && this.workspaceId);
     } catch (error) {
       console.error('Inworld TTS availability check failed:', error);
       return false;
@@ -127,7 +112,18 @@ export class InworldProvider implements TTSProvider {
         throw new Error(`Inworld API error: ${response.status} - ${error}`);
       }
 
-      const result = await response.json();
+      // Try to parse JSON, but handle non-JSON responses
+      let result;
+      const contentType = response.headers.get('content-type');
+      const responseText = await response.text();
+
+      try {
+        result = JSON.parse(responseText);
+      } catch (parseError) {
+        // Response isn't JSON - log the actual content for debugging
+        console.error('Inworld API returned non-JSON response:', responseText.slice(0, 200));
+        throw new Error(`Inworld API returned invalid JSON. Response starts with: ${responseText.slice(0, 100)}`);
+      }
 
       // Decode base64 audio content
       const audioContent = result.audioContent;

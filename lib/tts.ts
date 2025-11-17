@@ -5,9 +5,16 @@ import { TTSManager } from './tts/manager';
 import { TTSProviderConfig } from './tts/types';
 
 // Legacy OpenAI client for backward compatibility
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+let openai: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI {
+  if (!openai) {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+  return openai;
+}
 
 // Initialize TTS Manager with provider configuration
 let ttsManager: TTSManager | null = null;
@@ -66,7 +73,7 @@ export async function generateAudio(
 
   // Decide whether to use new manager or legacy implementation
   const useManager = provider !== 'openai' &&
-    (process.env.INWORLD_API_KEY || process.env.TTS_PROVIDER === 'auto');
+    (process.env.INWORLD_API_KEY || provider === 'auto');
 
   if (useManager) {
     // Use new TTS Manager for cost optimization
@@ -75,11 +82,12 @@ export async function generateAudio(
 
   // Legacy OpenAI implementation for backward compatibility
   const MAX_CHARS_PER_CHUNK = 4000; // OpenAI limit for legacy mode
+  const client = getOpenAIClient();
 
   // Check if text needs chunking
   if (text.length <= MAX_CHARS_PER_CHUNK) {
     // Small text - single API call
-    const mp3Response = await openai.audio.speech.create({
+    const mp3Response = await client.audio.speech.create({
       model,
       voice,
       input: text,
@@ -101,7 +109,7 @@ export async function generateAudio(
   for (let i = 0; i < chunks.length; i++) {
     console.log(`Generating audio chunk ${i + 1}/${chunks.length}...`);
 
-    const mp3Response = await openai.audio.speech.create({
+    const mp3Response = await client.audio.speech.create({
       model,
       voice,
       input: chunks[i],

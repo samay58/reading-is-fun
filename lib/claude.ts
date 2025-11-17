@@ -2,9 +2,16 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { HTMLTable } from './html-tables';
 import { parseHTMLTable, tableToMarkdown } from './html-tables';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+let anthropic: Anthropic | null = null;
+
+function getAnthropicClient(): Anthropic {
+  if (!anthropic) {
+    anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+  }
+  return anthropic;
+}
 
 export async function narrateTable(table: HTMLTable): Promise<string> {
   // Parse HTML table to readable format
@@ -35,7 +42,8 @@ Example style:
 
 Generate the narration (2-4 sentences):`;
 
-  const message = await anthropic.messages.create({
+  const client = getAnthropicClient();
+  const message = await client.messages.create({
     model: 'claude-3-5-haiku-20241022',
     max_tokens: 600,
     messages: [{
@@ -88,7 +96,8 @@ Example: "Display 1 presents a timeline comparing technology adoption across thr
 
 Narration:`;
 
-  const message = await anthropic.messages.create({
+  const client = getAnthropicClient();
+  const message = await client.messages.create({
     model: 'claude-3-5-haiku-20241022',
     max_tokens: 300,
     messages: [{
