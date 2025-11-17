@@ -4,7 +4,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { Upload as UploadIcon, CheckCircle } from 'lucide-react';
 
 interface UploadProps {
-  onUpload: (jobId: string, fileName: string) => void;
+  onUpload: (jobId: string, fileName: string, file?: File) => void;
 }
 
 export function Upload({ onUpload }: UploadProps) {
@@ -36,7 +36,7 @@ export function Upload({ onUpload }: UploadProps) {
 
       setUploadSuccess(true);
       setTimeout(() => {
-        onUpload(data.jobId, data.fileName);
+        onUpload(data.jobId, data.fileName, file);
       }, 500);
     } catch (err: any) {
       setError(err.message);

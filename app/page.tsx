@@ -11,13 +11,15 @@ import type { ProcessingResult } from '@/lib/types';
 export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
+  const [file, setFile] = useState<File | null>(null);
   const [processing, setProcessing] = useState(false);
   const [result, setResult] = useState<ProcessingResult | null>(null);
   const [useStreaming, setUseStreaming] = useState(true);
 
-  async function handleUpload(id: string, name: string) {
+  async function handleUpload(id: string, name: string, uploadedFile?: File) {
     setJobId(id);
     setFileName(name);
+    setFile(uploadedFile || null);
     setResult(null);
 
     if (!useStreaming) {
@@ -46,6 +48,7 @@ export default function Home() {
   function reset() {
     setJobId(null);
     setFileName('');
+    setFile(null);
     setProcessing(false);
     setResult(null);
   }
@@ -96,10 +99,11 @@ export default function Home() {
             <Upload onUpload={handleUpload} />
           )}
 
-          {useStreaming && jobId && fileName && (
+          {useStreaming && jobId && fileName && file && (
             <StreamingPlayer
               documentId={jobId}
               fileName={fileName}
+              file={file}
               onReset={reset}
             />
           )}

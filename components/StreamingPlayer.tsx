@@ -7,6 +7,7 @@ import type { StreamEvent, ChunkReadyEvent } from '@/lib/streaming/types';
 interface StreamingPlayerProps {
   documentId: string;
   fileName: string;
+  file: File;
   onReset: () => void;
 }
 
@@ -17,7 +18,7 @@ interface AudioChunk {
   status: 'pending' | 'ready' | 'played';
 }
 
-export function StreamingPlayer({ documentId, fileName, onReset }: StreamingPlayerProps) {
+export function StreamingPlayer({ documentId, fileName, file, onReset }: StreamingPlayerProps) {
   const [chunks, setChunks] = useState<AudioChunk[]>([]);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -35,35 +36,73 @@ export function StreamingPlayer({ documentId, fileName, onReset }: StreamingPlay
   const audioRef = useRef<HTMLAudioElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Connect to SSE stream
+  // Connect to SSE stream via POST (Vercel-compatible)
   useEffect(() => {
-    const eventSource = new EventSource(`/api/process-stream/${documentId}`);
-    eventSourceRef.current = eventSource;
+    let aborted = false;
 
-    eventSource.onopen = () => {
-      setStreamStatus('extracting');
-    };
-
-    eventSource.onmessage = (event) => {
+    async function startProcessing() {
       try {
-        const data: StreamEvent = JSON.parse(event.data);
-        handleStreamEvent(data);
-      } catch (err) {
-        console.error('Failed to parse SSE event:', err);
-      }
-    };
+        setStreamStatus('extracting');
 
-    eventSource.onerror = (err) => {
-      console.error('SSE error:', err);
-      setStreamStatus('error');
-      setError('Connection lost. Please refresh to retry.');
-      eventSource.close();
-    };
+        // Send file via POST
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(`/api/process-stream/${documentId}`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('No response body');
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (!aborted) {
+          const { done, value } = await reader.read();
+
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const event: StreamEvent = JSON.parse(data);
+                handleStreamEvent(event);
+              } catch (err) {
+                console.error('Failed to parse SSE event:', err);
+              }
+            }
+          }
+        }
+      } catch (err: any) {
+        if (!aborted) {
+          console.error('Streaming error:', err);
+          setStreamStatus('error');
+          setError(err.message || 'Processing failed. Please try again.');
+        }
+      }
+    }
+
+    startProcessing();
 
     return () => {
-      eventSource.close();
+      aborted = true;
     };
-  }, [documentId]);
+  }, [documentId, file]);
 
   const handleStreamEvent = (event: StreamEvent) => {
     switch (event.type) {

@@ -18,7 +18,7 @@ import { TTSProviderConfig } from '@/lib/tts/types';
 
 const MAX_PAGES = 40;
 
-export async function GET(
+export async function POST(
   req: NextRequest,
   props: { params: Promise<{ id: string }> }
 ) {
@@ -37,6 +37,40 @@ export async function GET(
       let keepaliveTimer: NodeJS.Timeout | null = null;
 
       try {
+        // Step 0: Receive and save PDF file
+        try {
+          const formData = await req.formData();
+          const file = formData.get('file') as File;
+
+          if (!file) {
+            const errorEvent: StreamEvent = {
+              type: 'error',
+              message: 'No file provided in request',
+              recoverable: false,
+              timestamp: Date.now(),
+            };
+            controller.enqueue(encoder.encode(errorEvent));
+            controller.close();
+            return;
+          }
+
+          // Save file to /tmp
+          const buffer = Buffer.from(await file.arrayBuffer());
+          const { writeFile } = await import('fs/promises');
+          await writeFile(pdfPath, buffer);
+        } catch (uploadError: any) {
+          console.error(`[${id}] Failed to save uploaded file:`, uploadError);
+          const errorEvent: StreamEvent = {
+            type: 'error',
+            message: `File upload failed: ${uploadError.message}`,
+            recoverable: false,
+            timestamp: Date.now(),
+          };
+          controller.enqueue(encoder.encode(errorEvent));
+          controller.close();
+          return;
+        }
+
         // Set up keepalive to prevent timeout
         keepaliveTimer = setInterval(() => {
           controller.enqueue(encoder.keepalive());
