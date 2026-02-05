@@ -12,7 +12,8 @@ import {
   Download,
   Sparkles,
   X,
-  FileText
+  FileText,
+  Loader2
 } from 'lucide-react';
 import { fadeUp } from '@/lib/motion';
 import type { StreamEvent, ChunkReadyEvent, ArtworkReadyEvent } from '@/lib/streaming/types';
@@ -29,7 +30,8 @@ interface Props {
 interface AudioChunk {
   index: number;
   audioUrl: string;
-  duration: number;
+  estimatedDuration: number;
+  actualDuration: number | null;
   status: 'pending' | 'ready' | 'played';
 }
 
@@ -48,7 +50,7 @@ function base64ToBlob(base64: string, mimeType: string): Blob {
 }
 
 function formatTime(seconds: number): string {
-  if (isNaN(seconds)) return '0:00';
+  if (isNaN(seconds) || seconds < 0) return '0:00';
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${String(secs).padStart(2, '0')}`;
@@ -111,23 +113,37 @@ function IconButton({
   );
 }
 
+// =============================================================================
+// Gapless Audio Engine
+//
+// Two <audio> elements alternate: while one plays, the next chunk is preloaded
+// into the other. On 'ended', we instantly start the preloaded element.
+// A unified timeline tracks cumulative position across all chunks.
+// =============================================================================
+
 export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) {
   // --- Refs ---
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioARef = useRef<HTMLAudioElement>(null);
+  const audioBRef = useRef<HTMLAudioElement>(null);
+  const activeSlot = useRef<'a' | 'b'>('a');
+  const preloadedChunkIndex = useRef<number | null>(null);
   const progressRef = useRef<HTMLDivElement>(null);
+  const isTransitioning = useRef(false);
 
   // --- State ---
   const [chunks, setChunks] = useState<AudioChunk[]>([]);
+  const chunksRef = useRef<AudioChunk[]>([]);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   const [totalChunks, setTotalChunks] = useState<number | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<PlayerStatus>('connecting');
   const [error, setError] = useState<string | null>(null);
 
-  // Playback state
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  // Unified timeline state
+  const [globalCurrentTime, setGlobalCurrentTime] = useState(0);
+  const [globalDuration, setGlobalDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [isHoveringScrubber, setIsHoveringScrubber] = useState(false);
@@ -138,12 +154,63 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
   const [artworkStatus, setArtworkStatus] = useState<ArtworkStatus>('none');
   const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
 
+  // Keep chunksRef in sync for use inside callbacks/effects
+  useEffect(() => { chunksRef.current = chunks; }, [chunks]);
+
   // --- Derived State ---
   const chunksReady = chunks.filter((c) => c?.status === 'ready').length;
   const generationProgress = totalChunks ? (chunksReady / totalChunks) * 100 : 0;
   const isGenerating = status === 'extracting' || status === 'processing';
   const hasStartedPlayback = chunksReady > 0;
   const displayName = fileName.replace('.pdf', '').replace(/_/g, ' ');
+
+  // --- Audio Element Helpers ---
+
+  function getActiveAudio(): HTMLAudioElement | null {
+    return activeSlot.current === 'a' ? audioARef.current : audioBRef.current;
+  }
+
+  function getInactiveAudio(): HTMLAudioElement | null {
+    return activeSlot.current === 'a' ? audioBRef.current : audioARef.current;
+  }
+
+  function swapSlots() {
+    activeSlot.current = activeSlot.current === 'a' ? 'b' : 'a';
+  }
+
+  // Compute the start time of a given chunk in the global timeline
+  function chunkStartTime(chunkIndex: number): number {
+    let t = 0;
+    for (let i = 0; i < chunkIndex; i++) {
+      const c = chunksRef.current[i];
+      if (c) t += c.actualDuration ?? c.estimatedDuration;
+    }
+    return t;
+  }
+
+  // Compute total known duration
+  function computeGlobalDuration(): number {
+    let t = 0;
+    for (const c of chunksRef.current) {
+      if (c) t += c.actualDuration ?? c.estimatedDuration;
+    }
+    return t;
+  }
+
+  // --- Preloading ---
+
+  const preloadNext = useCallback((afterIndex: number) => {
+    const nextIndex = afterIndex + 1;
+    const nextChunk = chunksRef.current[nextIndex];
+    const inactive = getInactiveAudio();
+
+    if (!nextChunk || nextChunk.status !== 'ready' || !inactive) return;
+    if (preloadedChunkIndex.current === nextIndex) return; // already preloaded
+
+    inactive.src = nextChunk.audioUrl;
+    inactive.load();
+    preloadedChunkIndex.current = nextIndex;
+  }, []);
 
   // --- SSE & Stream Logic ---
 
@@ -205,7 +272,7 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
     return () => {
       aborted = true;
       controller.abort();
-      chunks.forEach((c) => c?.audioUrl && URL.revokeObjectURL(c.audioUrl));
+      chunksRef.current.forEach((c) => c?.audioUrl && URL.revokeObjectURL(c.audioUrl));
       if (artworkUrl) URL.revokeObjectURL(artworkUrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -254,92 +321,241 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
 
     setChunks((prev) => {
       const updated = [...prev];
-      updated[event.index] = { index: event.index, audioUrl: url, duration: event.duration, status: 'ready' };
+      updated[event.index] = {
+        index: event.index,
+        audioUrl: url,
+        estimatedDuration: event.duration,
+        actualDuration: null,
+        status: 'ready',
+      };
       return updated;
     });
 
     // Auto-play first chunk
-    if (event.index === 0 && audioRef.current) {
-      audioRef.current.src = url;
-      audioRef.current.play()
-        .then(() => setIsPlaying(true))
-        .catch(() => console.log('Autoplay blocked'));
+    if (event.index === 0) {
+      const active = getActiveAudio();
+      if (active) {
+        active.src = url;
+        active.play()
+          .then(() => setIsPlaying(true))
+          .catch(() => console.log('Autoplay blocked'));
+      }
     }
   }
 
+  // When a new chunk arrives, try to preload it if it's the next one needed
+  useEffect(() => {
+    if (chunksReady > 0) {
+      preloadNext(currentChunkIndex);
+      setGlobalDuration(computeGlobalDuration());
+
+      // If we were buffering and the next chunk just arrived, resume
+      if (isBuffering) {
+        const nextChunk = chunks[currentChunkIndex + 1];
+        if (nextChunk?.status === 'ready') {
+          setIsBuffering(false);
+          // Trigger transition to next chunk
+          transitionToChunk(currentChunkIndex + 1);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chunksReady]);
+
+  // --- Chunk Transition (Gapless) ---
+
+  const transitionToChunk = useCallback((targetIndex: number) => {
+    if (isTransitioning.current) return;
+    isTransitioning.current = true;
+
+    const targetChunk = chunksRef.current[targetIndex];
+    if (!targetChunk || targetChunk.status !== 'ready') {
+      isTransitioning.current = false;
+      return;
+    }
+
+    // If the target is already preloaded in the inactive slot, swap and play
+    if (preloadedChunkIndex.current === targetIndex) {
+      const incoming = getInactiveAudio();
+      if (incoming) {
+        swapSlots();
+        setCurrentChunkIndex(targetIndex);
+        incoming.play()
+          .then(() => {
+            setIsPlaying(true);
+            preloadedChunkIndex.current = null;
+            preloadNext(targetIndex);
+          })
+          .catch(() => setIsPlaying(false));
+      }
+    } else {
+      // Not preloaded; load into active element (fallback, small gap possible)
+      const active = getActiveAudio();
+      if (active) {
+        active.src = targetChunk.audioUrl;
+        setCurrentChunkIndex(targetIndex);
+        active.play()
+          .then(() => {
+            setIsPlaying(true);
+            preloadNext(targetIndex);
+          })
+          .catch(() => setIsPlaying(false));
+      }
+    }
+
+    isTransitioning.current = false;
+  }, [preloadNext]);
+
   const handleChunkEnd = useCallback(() => {
     const nextIndex = currentChunkIndex + 1;
-    const nextChunk = chunks[nextIndex];
+    const nextChunk = chunksRef.current[nextIndex];
 
-    if (nextChunk?.status === 'ready' && audioRef.current) {
-      setCurrentChunkIndex(nextIndex);
-      audioRef.current.src = nextChunk.audioUrl;
-      audioRef.current.play().catch(() => setIsPlaying(false));
+    // Record actual duration of the chunk that just finished
+    const active = getActiveAudio();
+    if (active && !isNaN(active.duration)) {
+      setChunks((prev) => {
+        const updated = [...prev];
+        if (updated[currentChunkIndex]) {
+          updated[currentChunkIndex] = {
+            ...updated[currentChunkIndex],
+            actualDuration: active.duration,
+          };
+        }
+        return updated;
+      });
+    }
+
+    if (nextChunk?.status === 'ready') {
+      transitionToChunk(nextIndex);
+    } else if (totalChunks !== null && nextIndex >= totalChunks) {
+      // All chunks played
+      setIsPlaying(false);
     } else {
+      // Next chunk not ready yet; enter buffering state
+      setIsBuffering(true);
       setIsPlaying(false);
     }
-  }, [currentChunkIndex, chunks]);
+  }, [currentChunkIndex, totalChunks, transitionToChunk]);
+
+  // --- Playback Controls ---
 
   const togglePlay = useCallback(() => {
-    if (!audioRef.current) return;
+    const active = getActiveAudio();
+    if (!active) return;
 
     if (isPlaying) {
-      audioRef.current.pause();
+      active.pause();
       setIsPlaying(false);
     } else {
-      const chunk = chunks[currentChunkIndex];
+      const chunk = chunksRef.current[currentChunkIndex];
       if (chunk?.status === 'ready') {
-        if (!audioRef.current.src || audioRef.current.ended) {
-          audioRef.current.src = chunk.audioUrl;
+        if (!active.src || active.ended) {
+          active.src = chunk.audioUrl;
         }
-        audioRef.current.play()
+        active.play()
           .then(() => setIsPlaying(true))
           .catch(() => {});
       }
     }
-  }, [isPlaying, chunks, currentChunkIndex]);
+  }, [isPlaying, currentChunkIndex]);
 
   const restart = useCallback(() => {
-    const first = chunks[0];
-    if (first?.status === 'ready' && audioRef.current) {
+    const first = chunksRef.current[0];
+    if (first?.status !== 'ready') return;
+
+    // Reset to slot A
+    activeSlot.current = 'a';
+    preloadedChunkIndex.current = null;
+
+    const active = audioARef.current;
+    if (active) {
+      active.src = first.audioUrl;
+      active.currentTime = 0;
       setCurrentChunkIndex(0);
-      audioRef.current.src = first.audioUrl;
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+      setGlobalCurrentTime(0);
+      active.play()
+        .then(() => {
+          setIsPlaying(true);
+          preloadNext(0);
+        })
+        .catch(() => {});
     }
-  }, [chunks]);
+  }, [preloadNext]);
 
-  const handleTimeUpdate = () => {
-    if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime);
-      setDuration(audioRef.current.duration || 0);
+  // --- Unified Timeline ---
+
+  const handleTimeUpdate = useCallback(() => {
+    const active = getActiveAudio();
+    if (!active || isNaN(active.currentTime)) return;
+
+    const offset = chunkStartTime(currentChunkIndex);
+    setGlobalCurrentTime(offset + active.currentTime);
+  }, [currentChunkIndex]);
+
+  // --- Seeking (Cross-Chunk) ---
+
+  const seekToGlobalTime = useCallback((targetTime: number) => {
+    const allChunks = chunksRef.current;
+    let accumulated = 0;
+
+    for (let i = 0; i < allChunks.length; i++) {
+      const c = allChunks[i];
+      if (!c || c.status !== 'ready') break;
+
+      const dur = c.actualDuration ?? c.estimatedDuration;
+      if (accumulated + dur > targetTime) {
+        const localTime = targetTime - accumulated;
+
+        if (i === currentChunkIndex) {
+          // Same chunk, just seek within it
+          const active = getActiveAudio();
+          if (active) active.currentTime = localTime;
+        } else {
+          // Different chunk; load and seek
+          const active = getActiveAudio();
+          if (active) {
+            active.src = c.audioUrl;
+            active.currentTime = localTime;
+            setCurrentChunkIndex(i);
+            preloadedChunkIndex.current = null;
+            if (isPlaying) {
+              active.play().catch(() => {});
+            }
+            preloadNext(i);
+          }
+        }
+        setGlobalCurrentTime(targetTime);
+        return;
+      }
+      accumulated += dur;
     }
-  };
+  }, [currentChunkIndex, isPlaying, preloadNext]);
 
-  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!progressRef.current || !audioRef.current || !duration) return;
+  const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!progressRef.current || globalDuration <= 0) return;
     const rect = progressRef.current.getBoundingClientRect();
     const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    audioRef.current.currentTime = pos * duration;
-    setCurrentTime(pos * duration);
-  };
+    seekToGlobalTime(pos * globalDuration);
+  }, [globalDuration, seekToGlobalTime]);
 
-  const skipForward = () => {
-    if (audioRef.current) audioRef.current.currentTime += 10;
-  };
+  const skipForward = useCallback(() => {
+    seekToGlobalTime(Math.min(globalCurrentTime + 10, globalDuration));
+  }, [globalCurrentTime, globalDuration, seekToGlobalTime]);
 
-  const skipBackward = () => {
-    if (audioRef.current) audioRef.current.currentTime -= 10;
-  };
+  const skipBackward = useCallback(() => {
+    seekToGlobalTime(Math.max(globalCurrentTime - 10, 0));
+  }, [globalCurrentTime, seekToGlobalTime]);
 
   // --- Effects ---
 
-  // Volume control
+  // Volume control: apply to both elements
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
-      audioRef.current.muted = isMuted;
-    }
+    [audioARef.current, audioBRef.current].forEach((el) => {
+      if (el) {
+        el.volume = volume;
+        el.muted = isMuted;
+      }
+    });
   }, [volume, isMuted]);
 
   // Keyboard shortcuts
@@ -365,9 +581,34 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [togglePlay, restart, onReset, chunksReady]);
+  }, [togglePlay, restart, onReset, chunksReady, skipForward, skipBackward]);
+
+  // Update global duration as actual durations come in
+  useEffect(() => {
+    setGlobalDuration(computeGlobalDuration());
+  }, [chunks]);
+
+  // Record actual duration when audio metadata loads
+  const handleLoadedMetadata = useCallback((slot: 'a' | 'b') => {
+    const el = slot === 'a' ? audioARef.current : audioBRef.current;
+    if (!el || isNaN(el.duration)) return;
+
+    // Only update if this slot is active
+    if (slot === activeSlot.current) {
+      const idx = currentChunkIndex;
+      setChunks((prev) => {
+        const updated = [...prev];
+        if (updated[idx] && updated[idx].actualDuration === null) {
+          updated[idx] = { ...updated[idx], actualDuration: el.duration };
+        }
+        return updated;
+      });
+    }
+  }, [currentChunkIndex]);
 
   // --- Render ---
+
+  const playbackProgress = globalDuration > 0 ? (globalCurrentTime / globalDuration) * 100 : 0;
 
   return (
     <motion.div
@@ -398,7 +639,7 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
               color: 'var(--faint)',
               textTransform: 'uppercase',
             }}>
-              {isGenerating ? 'Synthesizing' : status === 'error' ? 'Error' : 'Ready'}
+              {isBuffering ? 'Buffering' : isGenerating ? 'Synthesizing' : status === 'error' ? 'Error' : 'Ready'}
             </span>
           </div>
           <IconButton icon={X} onClick={onReset} title="Close" />
@@ -490,6 +731,24 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
                       {error}
                     </p>
                   </motion.div>
+                ) : isBuffering ? (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}
+                  >
+                    <Loader2 className="animate-spin" size={32} style={{ color: 'white' }} />
+                    <span style={{
+                      fontSize: '0.75rem',
+                      fontFamily: 'var(--font-mono)',
+                      letterSpacing: '0.1em',
+                      color: 'white',
+                      textTransform: 'uppercase',
+                    }}>
+                      Buffering next section...
+                    </span>
+                  </motion.div>
                 ) : (artworkStatus === 'generating' || (isGenerating && !artworkUrl)) ? (
                   <motion.div
                     initial={{ opacity: 0 }}
@@ -533,7 +792,7 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
               </h2>
               <p style={{ fontSize: '0.875rem', fontWeight: 500, color: 'var(--muted)' }}>
                 {pageCount ? `${pageCount} Pages` : 'Document'}
-                {chunksReady > 0 && ` · Part ${currentChunkIndex + 1}`}
+                {totalChunks && chunksReady > 0 && ` · ${chunksReady}/${totalChunks} sections`}
               </p>
             </div>
 
@@ -596,21 +855,31 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
             overflow: 'hidden',
             transition: 'height 150ms ease',
           }}>
-            {/* Fill */}
+            {/* Generation progress (faint, behind playback) */}
+            {isGenerating && (
+              <div style={{
+                position: 'absolute',
+                height: '100%',
+                borderRadius: '9999px',
+                background: 'var(--accent)',
+                opacity: 0.25,
+                width: `${generationProgress}%`,
+                transition: 'width 300ms ease',
+              }} />
+            )}
+            {/* Playback fill */}
             <div style={{
+              position: 'relative',
               height: '100%',
               borderRadius: '9999px',
-              background: isGenerating ? 'var(--accent)' : 'var(--foreground)',
-              opacity: isGenerating ? 0.5 : 1,
-              width: isGenerating
-                ? `${generationProgress}%`
-                : `${duration ? (currentTime / duration) * 100 : 0}%`,
+              background: 'var(--foreground)',
+              width: `${Math.min(playbackProgress, 100)}%`,
               transition: 'width 100ms linear',
             }} />
           </div>
 
           {/* Hover Tooltip */}
-          {isHoveringScrubber && hoverPosition !== null && hasStartedPlayback && (
+          {isHoveringScrubber && hoverPosition !== null && hasStartedPlayback && globalDuration > 0 && (
             <div style={{
               position: 'absolute',
               top: '-1.5rem',
@@ -625,7 +894,7 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
               boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
               pointerEvents: 'none',
             }}>
-              {formatTime((hoverPosition / (progressRef.current?.clientWidth || 1)) * duration)}
+              {formatTime((hoverPosition / (progressRef.current?.clientWidth || 1)) * globalDuration)}
             </div>
           )}
 
@@ -643,8 +912,8 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
             opacity: hasStartedPlayback ? 1 : 0,
             transition: 'opacity 150ms ease',
           }}>
-            <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(duration)}</span>
+            <span>{formatTime(globalCurrentTime)}</span>
+            <span>{formatTime(globalDuration)}</span>
           </div>
         </div>
 
@@ -742,7 +1011,6 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
             onChange={(e) => {
               const val = parseFloat(e.target.value);
               setVolume(val);
-              if (audioRef.current) audioRef.current.volume = val;
               setIsMuted(val === 0);
             }}
             style={{
@@ -786,11 +1054,19 @@ export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) 
         </div>
       </div>
 
-      {/* Hidden Audio Element */}
+      {/* Dual Audio Elements for Gapless Playback */}
       <audio
-        ref={audioRef}
+        ref={audioARef}
         onEnded={handleChunkEnd}
         onTimeUpdate={handleTimeUpdate}
+        onLoadedMetadata={() => handleLoadedMetadata('a')}
+        preload="auto"
+      />
+      <audio
+        ref={audioBRef}
+        onEnded={handleChunkEnd}
+        onTimeUpdate={handleTimeUpdate}
+        onLoadedMetadata={() => handleLoadedMetadata('b')}
         preload="auto"
       />
     </motion.div>
