@@ -8,15 +8,17 @@ import { extractPDF } from '@/lib/deepseek';
 import { extractHTMLTables } from '@/lib/html-tables';
 import { narrateTables } from '@/lib/claude';
 import { processDeepSeekText } from '@/lib/cleaning';
-import { generateAudio } from '@/lib/tts';
+import { createTTSManager, generateAudio } from '@/lib/tts';
 import { calculateExactCost } from '@/lib/cost';
 import { SSEEncoder, getSSEHeaders, KEEPALIVE_INTERVAL } from '@/lib/streaming/sse-helpers';
 import { ChunkManager, chunkText, estimateChunkDuration } from '@/lib/streaming/chunk-manager';
 import type { StreamEvent, ProcessingStats } from '@/lib/streaming/types';
-import { TTSManager } from '@/lib/tts/manager';
-import { TTSProviderConfig } from '@/lib/tts/types';
+import { extractImages, narrateImages, splitTextByPage, cleanupImages } from '@/lib/images';
+import type { ImageNarration } from '@/lib/images';
+import { generateDocumentArtworkWithTimeout, type ArtworkResult } from '@/lib/fal';
 
-const MAX_PAGES = 40;
+const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.VERCEL;
+const MAX_PAGES = isLocalDev ? Infinity : 40;
 
 export async function POST(
   req: NextRequest,
@@ -34,7 +36,28 @@ export async function POST(
 
   const stream = new ReadableStream({
     async start(controller) {
+      let streamClosed = false;
       let keepaliveTimer: NodeJS.Timeout | null = null;
+
+      const enqueueOrStop = (data: Uint8Array) => {
+        if (streamClosed) return false;
+        try {
+          controller.enqueue(data);
+          return true;
+        } catch (err) {
+          streamClosed = true;
+          console.warn(`[${id}] Stream closed while enqueuing:`, (err as Error).message);
+          try {
+            controller.close();
+          } catch {
+            // ignore
+          }
+          return false;
+        }
+      };
+
+      const sendEvent = (event: StreamEvent) => enqueueOrStop(encoder.encode(event));
+      const sendKeepalive = () => enqueueOrStop(encoder.keepalive());
 
       try {
         // Step 0: Receive and save PDF file
@@ -49,7 +72,7 @@ export async function POST(
               recoverable: false,
               timestamp: Date.now(),
             };
-            controller.enqueue(encoder.encode(errorEvent));
+            sendEvent(errorEvent);
             controller.close();
             return;
           }
@@ -66,14 +89,14 @@ export async function POST(
             recoverable: false,
             timestamp: Date.now(),
           };
-          controller.enqueue(encoder.encode(errorEvent));
+          sendEvent(errorEvent);
           controller.close();
           return;
         }
 
         // Set up keepalive to prevent timeout
         keepaliveTimer = setInterval(() => {
-          controller.enqueue(encoder.keepalive());
+          sendKeepalive();
         }, KEEPALIVE_INTERVAL);
 
         // Step 1: Extract PDF
@@ -81,11 +104,13 @@ export async function POST(
           type: 'extraction_start',
           timestamp: Date.now(),
         };
-        controller.enqueue(encoder.encode(extractionStart));
+        if (!sendEvent(extractionStart)) return;
 
         console.log(`[${id}] Starting PDF extraction...`);
         const startTime = Date.now();
         const { markdown: rawText, pageCount } = await extractPDF(pdfPath);
+        console.log(`[${id}] OCR length: ${rawText.length} chars`);
+        console.log(`[${id}] OCR sample (first 500 chars): ${rawText.slice(0, 500)}`);
 
         if (pageCount > MAX_PAGES) {
           const errorEvent: StreamEvent = {
@@ -94,7 +119,7 @@ export async function POST(
             recoverable: false,
             timestamp: Date.now(),
           };
-          controller.enqueue(encoder.encode(errorEvent));
+          sendEvent(errorEvent);
           controller.close();
           return;
         }
@@ -103,37 +128,88 @@ export async function POST(
         console.log(`[${id}] Extracting tables...`);
         const tables = extractHTMLTables(rawText);
 
+        // Step 2b: Extract and narrate images in the background
+        let imageNarrations: ImageNarration[] = [];
+        try {
+          const images = await extractImages(pdfPath, id);
+          if (images.length > 0) {
+            console.log(`[${id}] Found ${images.length} images, generating narrations...`);
+            const pageContexts = splitTextByPage(rawText);
+            imageNarrations = await narrateImages(images, pageContexts);
+            console.log(`[${id}] Narrated ${imageNarrations.length} images`);
+
+            // Log each image narration for debugging
+            if (imageNarrations.length > 0) {
+              console.log(`[${id}] -------- IMAGE NARRATIONS --------`);
+              imageNarrations.forEach((n, i) => {
+                console.log(`[${id}] [Page ${n.page}] ${n.caption.slice(0, 100)}${n.caption.length > 100 ? '...' : ''}`);
+              });
+              console.log(`[${id}] -----------------------------------`);
+            }
+          } else {
+            console.log(`[${id}] No images detected`);
+          }
+        } catch (error: any) {
+          console.error(`[${id}] Image extraction/narration failed:`, error.message || error);
+        } finally {
+          cleanupImages(id).catch(() => {});
+        }
+
+        // Send table extraction progress event
+        if (tables.length > 0) {
+          const tableEvent: StreamEvent = {
+            type: 'chunk_processing',
+            index: 0,
+            total: tables.length,
+            text: `Processing ${tables.length} table${tables.length > 1 ? 's' : ''}...`,
+            timestamp: Date.now(),
+          };
+          if (!sendEvent(tableEvent)) return;
+        }
+
         console.log(`[${id}] Generating table narrations...`);
-        const narrations = tables.length > 0
-          ? await narrateTables(tables)
-          : new Map();
+        let narrations: Map<number, string>;
+        try {
+          narrations = tables.length > 0
+            ? await narrateTables(tables)
+            : new Map();
+          console.log(`[${id}] Successfully narrated ${narrations.size} tables`);
+        } catch (error: any) {
+          console.error(`[${id}] Table narration failed:`, error);
+          // Fallback: use empty narrations to continue processing
+          narrations = new Map();
+          // Note: Table narration failure won't block audio generation
+        }
 
         // Step 3: Clean and process text
         console.log(`[${id}] Processing text...`);
-        const cleanText = processDeepSeekText(rawText, tables, narrations);
+        const cleanText = processDeepSeekText(rawText, tables, narrations, imageNarrations);
+        console.log(`[${id}] Clean text length: ${cleanText.length} chars`);
+        console.log(`[${id}] Clean text sample (first 500 chars): ${cleanText.slice(0, 500)}`);
+
+        // Full narration debug output with breakdown
+        console.log(`[${id}] ========== NARRATION BREAKDOWN ==========`);
+        console.log(`[${id}] OCR text: ${rawText.length} chars`);
+        console.log(`[${id}] Tables narrated: ${tables.length}`);
+        console.log(`[${id}] Images narrated: ${imageNarrations.length}`);
+        console.log(`[${id}] Final clean text: ${cleanText.length} chars`);
+        console.log(`[${id}] ========== FULL NARRATION START ==========`);
+        console.log(cleanText);
+        console.log(`[${id}] ========== FULL NARRATION END ==========`);
 
         // Step 4: Get dynamic chunk size and chunk the text
         // Initialize TTS Manager to get the appropriate chunk size
-        const config: TTSProviderConfig = {};
-        if (process.env.INWORLD_API_KEY && process.env.INWORLD_WORKSPACE_ID) {
-          config.inworld = {
-            apiKey: process.env.INWORLD_API_KEY,
-            workspaceId: process.env.INWORLD_WORKSPACE_ID,
-          };
-        }
-        if (process.env.OPENAI_API_KEY) {
-          config.openai = {
-            apiKey: process.env.OPENAI_API_KEY,
-            model: 'tts-1-hd',
-            voice: 'onyx'
-          };
-        }
-        const ttsManager = new TTSManager(config);
-        const maxChunkSize = await ttsManager.getMaxChunkSize();
-        console.log(`[${id}] Using chunk size of ${maxChunkSize} chars based on available providers`);
+        const providerPref = process.env.TTS_PROVIDER || 'auto';
+        const ttsManager = createTTSManager(providerPref);
+        const maxChunkSize = await ttsManager.getPrimaryChunkSize();
+        console.log(`[${id}] Using chunk size of ${maxChunkSize} chars based on primary provider`);
 
         const textChunks = chunkText(cleanText, maxChunkSize);
         const totalChunks = textChunks.length;
+
+        if (totalChunks === 0) {
+          throw new Error('No text extracted from PDF (OCR returned empty content)');
+        }
 
         // Send extraction complete event
         const extractionComplete: StreamEvent = {
@@ -144,7 +220,44 @@ export async function POST(
           totalChunks,
           timestamp: Date.now(),
         };
-        controller.enqueue(encoder.encode(extractionComplete));
+        if (!sendEvent(extractionComplete)) return;
+
+        // Start artwork generation in parallel (non-blocking)
+        let artworkResult: ArtworkResult | null = null;
+        let artworkPromise: Promise<void> | null = null;
+
+        if (process.env.FAL_KEY && cleanText.length > 200) {
+          artworkPromise = (async () => {
+            try {
+              // Send artwork_generating event
+              const artworkGeneratingEvent: StreamEvent = {
+                type: 'artwork_generating',
+                prompt: 'Generating manuscript-style illustration...',
+                timestamp: Date.now(),
+              };
+              sendEvent(artworkGeneratingEvent);
+
+              // Generate artwork with 30s timeout
+              artworkResult = await generateDocumentArtworkWithTimeout(cleanText, pageCount, 30000);
+
+              // Send artwork_ready event
+              const artworkReadyEvent: StreamEvent = {
+                type: 'artwork_ready',
+                imageData: artworkResult.imageData,
+                mimeType: artworkResult.mimeType,
+                prompt: artworkResult.prompt,
+                cost: artworkResult.cost,
+                timestamp: Date.now(),
+              };
+              sendEvent(artworkReadyEvent);
+
+              console.log(`[${id}] Artwork generated successfully`);
+            } catch (error: any) {
+              console.error(`[${id}] Artwork generation failed:`, error.message || error);
+              // Don't block audio - just skip artwork
+            }
+          })();
+        }
 
         // Step 5: Process chunks progressively
         console.log(`[${id}] Processing ${totalChunks} chunks...`);
@@ -162,10 +275,11 @@ export async function POST(
             text: chunkText.slice(0, 100) + '...',
             timestamp: Date.now(),
           };
-          controller.enqueue(encoder.encode(processingEvent));
+          if (!sendEvent(processingEvent)) return;
 
           // Generate audio for this chunk
           console.log(`[${id}] Generating audio for chunk ${i + 1}/${totalChunks}...`);
+          console.log(`[${id}] Chunk ${i} text: "${chunkText.slice(0, 200)}..."`);
           const audioPath = await generateAudio(chunkText, `${id}-chunk-${i}`);
 
           // Read the audio file as buffer
@@ -194,7 +308,7 @@ export async function POST(
             charCount: chunkText.length,
             timestamp: Date.now(),
           };
-          controller.enqueue(encoder.encode(chunkReadyEvent));
+          if (!sendEvent(chunkReadyEvent)) return;
 
           chunkAudioUrls.push(`chunk-${i}`);
         }
@@ -204,8 +318,14 @@ export async function POST(
         // Note: In production, this could be done asynchronously
         const concatenatedPath = await chunkManager.concatenateChunks(totalChunks);
 
-        // Calculate final costs
-        const cost = calculateExactCost(cleanText.length, tables.length);
+        // Wait for artwork to complete (if it was started)
+        if (artworkPromise) {
+          await artworkPromise.catch(() => {});
+        }
+
+        // Calculate final costs (include artwork if generated)
+        const hasArtwork = artworkResult !== null;
+        const cost = calculateExactCost(cleanText.length, tables.length, hasArtwork);
         const processingTime = Math.floor((Date.now() - startTime) / 1000);
 
         // Prepare stats
@@ -220,6 +340,7 @@ export async function POST(
             parsing: cost.parsing,
             tables: cost.tables,
             tts: cost.tts,
+            artwork: cost.artwork,
             total: cost.total,
           },
         };
@@ -233,7 +354,7 @@ export async function POST(
           stats,
           timestamp: Date.now(),
         };
-        controller.enqueue(encoder.encode(completeEvent));
+        sendEvent(completeEvent);
 
         console.log(`[${id}] Streaming complete! Processed ${totalChunks} chunks in ${processingTime}s`);
 
@@ -247,7 +368,7 @@ export async function POST(
           recoverable: false,
           timestamp: Date.now(),
         };
-        controller.enqueue(encoder.encode(errorEvent));
+        sendEvent(errorEvent);
       } finally {
         // Clean up keepalive timer
         if (keepaliveTimer) {
@@ -255,7 +376,10 @@ export async function POST(
         }
 
         // Close the stream
-        controller.close();
+        if (!streamClosed) {
+          controller.close();
+          streamClosed = true;
+        }
       }
     },
   });

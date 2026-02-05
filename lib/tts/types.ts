@@ -23,7 +23,7 @@ export interface TTSProvider {
   /**
    * Get estimated cost for text
    */
-  estimateCost(text: string): number;
+  estimateCost(text: string | number): number;
 
   /**
    * Provider-specific metrics
@@ -50,6 +50,11 @@ export interface TTSMetrics {
 }
 
 export interface TTSProviderConfig {
+  hathora?: {
+    apiKey: string;
+    baseUrl?: string;
+    maxCharsPerChunk?: number;
+  };
   openai?: {
     apiKey: string;
     model?: 'tts-1' | 'tts-1-hd';
@@ -60,9 +65,27 @@ export interface TTSProviderConfig {
     workspaceId: string;
     characterId?: string;
   };
+  // New providers (2025-11 migration)
+  deepinfra?: {
+    apiKey: string;
+    voice?: string;
+  };
+  orpheus?: {
+    apiKey: string;
+    voice?: string;
+    enableEmotionTags?: boolean;
+  };
+  minimax?: {
+    apiKey: string;
+    groupId: string;
+  };
   elevenlabs?: {
     apiKey: string;
     voiceId?: string;
+  };
+  sesame?: {
+    apiKey: string;
+    speakerId?: number; // 0-based speaker ID
   };
 }
 

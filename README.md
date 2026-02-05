@@ -1,8 +1,8 @@
-# PDF to Audiobook Narration
+# Phoenix Voice
 
-You've waited 30 minutes for a PDF to convert to audio. You've stared at progress bars while 40 pages of text processed somewhere in the cloud. That experience is broken.
+Transform documents into natural audio. Upload a PDF, hear the first paragraph in 10 seconds. Keep listening while the rest streams in progressively. No waiting. No progress bars. Just audio that starts playing immediately.
 
-This tool fixes it. Upload a PDF, hear the first paragraph in 10 seconds. Keep listening while the rest streams in progressively. No waiting. No progress bars. Just audio that starts playing before you finish reading this sentence.
+**Production**: https://voice.samayz.ing
 
 ## What It Does
 
@@ -43,30 +43,33 @@ Claude transforms table data into natural narration: "The company grew revenue f
 
 Same data. Completely different listening experience.
 
-### 3. Cost Optimization (Dual TTS)
+### 3. Cost Optimization (Multi-Provider TTS)
 
-Two providers, strategic selection:
+Three providers with automatic fallback:
 
-- **Inworld AI**: $10 per 1M characters (primary)
-- **OpenAI TTS HD**: $30 per 1M characters (fallback)
+- **Hathora Kokoro**: ~$0.50 per 1M characters (primary, 98% cheaper)
+- **Inworld AI**: $10 per 1M characters (fallback)
+- **OpenAI TTS HD**: $30 per 1M characters (final fallback)
 
-Smart routing saves 67% on costs. A typical 10-page PDF costs $0.03 instead of $0.10.
+Smart routing saves 98% on costs. A typical 10-page PDF costs $0.015 instead of $0.90.
 
 The math:
 
 - 10 pages = ~5,000 words = ~30,000 characters
-- Inworld: 30,000 × $0.00001 = $0.30 → $0.03 actual
-- OpenAI: 30,000 × $0.00003 = $0.90 → $0.09 actual
+- Hathora: 30,000 × $0.0000005 = $0.015
+- Inworld: 30,000 × $0.00001 = $0.30
+- OpenAI: 30,000 × $0.00003 = $0.90
 
-Cost scales linearly. A 100-page document costs $0.30 with Inworld, $0.90 with OpenAI.
+Cost scales linearly. A 100-page document costs $0.05 with Hathora, $3.00 with OpenAI.
 
 ### 4. Streaming Architecture
 
 **Intelligent Chunking**:
 
 - Respects paragraph and sentence boundaries (no mid-sentence cuts)
-- Provider-aware sizing (2,000 characters for Inworld, 4,000 for OpenAI)
+- Provider-aware sizing (2,000 characters for Hathora/Inworld, 4,000 for OpenAI)
 - Sequential generation with immediate playback
+- Automatic WAV→MP3 conversion for Hathora (using ffmpeg)
 
 **Progressive Delivery**:
 
@@ -80,18 +83,17 @@ A 40-page document starts playing in 10 seconds. You've listened to three pages 
 
 ## Design Philosophy
 
-This interface follows Rauno Freiberg's principles: invisible design that disappears so content shines.
+Modern, refined aesthetic inspired by Linear and Vercel. Clean, professional, and built to last.
 
 **The System**:
 
-- Monochromatic palette (#fafafa to #171717)
-- Mathematical 8px grid
-- Zero decorative animations (only 150ms functional transitions)
-- System fonts (clarity and speed over custom typography)
+- Light mode default with automatic dark mode (`prefers-color-scheme`)
+- Blue accent (`#0070f3`) for interactive elements
+- Geist Sans/Mono typography
+- Generous whitespace and centered layouts
+- Minimal motion (150ms opacity fades only)
 
-No gradients. No shadows. No parallax effects. Just clean hierarchy and ruthless simplicity.
-
-This design will look as modern in 2035 as it does today. Trends fade. Clarity endures.
+No decoration. No clutter. Just elegant hierarchy and functional design.
 
 ## Architecture
 

@@ -1,110 +1,145 @@
-# PDF to Voice UI Redesign - Complete
+# Phoenix Voice - Complete Frontend Redesign
 
-## Rauno Freiberg Design Principles Applied
+**Last Updated**: December 12, 2025
+**Status**: Production deployed at voice.samayz.ing
+**Session Log**: See `docs/SESSION-LOG-2025-12-12.md` for latest changes
 
-Following Rauno Freiberg's design philosophy of elegant, timeless, minimal design, we have completely transformed the PDF to Voice tool from a gradient-heavy, animated interface to a clean, minimal system that would fit seamlessly into Rauno's portfolio.
+## Overview
 
-## Key Design Decisions
+Complete rebuild from "Warm Circuits" retro aesthetic to modern, Linear/Vercel-inspired design system. Rebranded as "Phoenix Voice" with custom waveform icon and streamlined codebase.
 
-### 1. Monochromatic Color Palette
-- **Light Mode**: #fafafa background, #171717 foreground, #e5e5e5 borders
-- **Dark Mode**: #0a0a0a background, #ededed foreground, #262626 borders
-- **Removed**: All purple/pink gradients, glassmorphism effects, colored backgrounds
-- **Result**: Clean, professional aesthetic focused on content
+## What Changed (Dec 11, 2025)
 
-### 2. Mathematical 8px Grid System
-- All spacing follows 8px increments (4px, 8px, 12px, 16px, 24px, 32px, 48px, 64px)
-- Button heights aligned to 48px (6 grid units) for consistent touch targets
-- Card padding: 24px (3 grid units)
-- Consistent gaps and margins throughout
+### AI-Generated Cover Artwork
+- **Provider**: Fal.ai Nano Banana Pro ($0.15/image)
+- **Style**: Minimalist hand-drawn manuscript sketch, whimsical ink illustration
+- **Flow**: Document text → DeepInfra extracts theme → Fal.ai generates artwork
+- **New files**: `lib/fal.ts`, `lib/deepinfra-llm.ts`
+- **Events**: `artwork_generating`, `artwork_ready` added to SSE stream
 
-### 3. Typography
-- System font stack for maximum clarity and performance
-- Mathematical type scale: 12px, 14px, 16px, 18px, 24px, 32px, 48px
-- Tight letter-spacing for headlines (-0.03em)
-- Relaxed line-height (1.6) for body text
+### Anthropic → DeepInfra Migration
+- **Table narration**: Now uses DeepInfra Llama 3.3 70B instead of Claude Haiku
+- **Image captioning**: Now uses DeepInfra Llama 3.2 11B Vision
+- **Theme extraction**: DeepInfra Llama for artwork prompt generation
+- **Cost reduction**: Significantly cheaper than Anthropic
 
-### 4. Minimal Animations
-- **Removed All Decorative Animations**:
-  - No morphing blobs
-  - No sparkles or particles
-  - No glow effects
-  - No pulsing animations
-  - No gradient animations
-  - No audio visualizers
-- **Kept Only Essential Transitions**:
-  - 150ms duration for all interactions
-  - Simple opacity and border-color transitions
-  - No transform animations except subtle button press (scale: 0.98)
+### StreamingPlayer Enhancements
+- **Artwork container**: Displays AI-generated cover art with loading state
+- **Volume controls**: Slider + mute button with animated music bars
+- **Skip buttons**: ±10 seconds navigation
+- **Better animations**: Shimmer, pulse-glow, music-bar keyframes
 
-### 5. Component Updates
+## What Changed (Dec 12, 2025)
 
-#### globals.css
-- Complete rewrite with design tokens
-- CSS custom properties for all values
-- Utility classes aligned to 8px grid
-- Removed all gradient and glass effects
+### OCR Line Break Normalization
+- **Problem**: Visual `\n` from PDF layout caused choppy TTS narration
+- **Solution**: `normalizeLineBreaksForNarration()` in `lib/text-cleaner.ts`
+- **Heuristics**: Lowercase continuation, continuation words, list/header detection
+- **Result**: `"The state of\nenterprise AI"` → `"The state of enterprise AI"`
 
-#### page.tsx
-- Removed gradient backgrounds
-- Simplified layout structure
-- Clean typography without effects
-- Standard toggle switch for streaming mode
+### Enhanced Debug Logging
+- Labeled separators for image narrations in terminal
+- Full narration breakdown (OCR chars → tables → images → final chars)
+- Complete clean text output before TTS generation
 
-#### Upload.tsx
-- Border-only design (no gradients)
-- Simple drag state with border color change
-- Clean loading spinner (1px border)
-- No decorative elements
+### Kokoro Voice Mapping Fix
+- **Problem**: Code used non-existent voices (`af_heart`, `am_eric`)
+- **Fix**: Updated to real Kokoro voices in `lib/tts/providers/deepinfra.ts`
+- **Available**: af_bella, af_nicole, af_sarah, af_sky, am_adam, am_michael, bf_emma, bf_isabella, bm_george, bm_lewis
 
-#### StreamingPlayer.tsx
-- Removed all framer-motion animations
-- Clean card-based layout
-- 2px progress bars (minimal height)
-- Simple status indicators
+### Sesame CSM-1B (Attempted)
+- Created provider at `lib/tts/providers/sesame.ts`
+- Uses DeepInfra API for Maya voice
+- **Status**: Disabled - API issues, rolled back to Kokoro
 
-#### Player.tsx
-- Standard audio controls
-- Consistent button styling
-- Clean progress bar design
+## What Changed (Nov 29, 2025)
 
-#### Preview.tsx
-- Monochromatic cards with borders
-- Consistent spacing and typography
-- No colored backgrounds
-- Clean data presentation
+### Branding
+- **Name**: "PDF to Voice" → "Phoenix Voice"
+- **Icon**: Generic file icon → Custom 6-bar waveform SVG (varying heights/opacity)
+- **Aesthetic**: Retro tape deck → Modern, refined, professional
 
-#### motion.ts
-- Reduced from 240+ lines to 100 lines
-- Removed all decorative animations
-- Kept only essential fade transitions
-- 150ms duration standard
+### Design System
+- **Light mode default** with dark mode via `prefers-color-scheme`
+- **Color palette**:
+  - Light: `#ffffff` bg, `#171717` fg, `#0070f3` accent
+  - Dark: `#0a0a0a` bg, `#ededed` fg, `#0070f3` accent
+- **Typography**: Geist Sans/Mono (replaced DM Serif Display + IBM Plex)
+- **Spacing**: Generous whitespace, vertically centered layouts
+- **Motion**: Minimal opacity fades (150-200ms), subtle transforms (max 8px)
 
-### 6. Unused Components (Not Updated)
-- **AudioVisualizer.tsx**: Decorative component, not used in app
-- **ProviderSelector.tsx**: Gradient-heavy component, not used in app
+### Code Reduction
+- `globals.css`: 1,230 → 245 lines (80% reduction)
+- `motion.ts`: 491 → 57 lines (88% reduction)
+- `Upload.tsx`: 335 → 321 lines (streamlined with inline styles)
+- `StreamingPlayer.tsx`: 760 → 502 lines (34% reduction)
+- `page.tsx`: 332 → 282 lines (15% reduction)
 
-## Design Principles Followed
+### Components Deleted
+- VUMeter.tsx
+- NixieCounter.tsx
+- TransportButton.tsx
+- useSpotlight.ts
+- useMagneticButton.ts
+- useMousePosition.ts
 
-1. **"Actions that are frequent and low in novelty should avoid extraneous animations"** - All frequent interactions now have instant feedback without decoration
+### StreamingPlayer Improvements
+- **Music player controls** visible immediately when first chunk ready
+- **Clickable progress scrubber** for seeking within chunks
+- **Elegant buttons**: Restart, Play/Pause (blue accent with glow), Download
+- **Hover states**: Proper color/border transitions on all controls
+- **X close button** in top-right (replaces disconnected "New file" button)
+- **Status hierarchy**: Document name (1rem bold) → metadata (0.75rem faint)
 
-2. **Invisible Details** - The interface disappears and lets the content (PDF processing) be the focus
+### Technical Implementation
+- **Explicit inline styles** for guaranteed centering (no Tailwind class conflicts)
+- **Blue accent color** (`#0070f3`) with subtle glow on play button
+- **Responsive hover effects** on all interactive elements
+- **Keyboard shortcuts** preserved: Space (play/pause), R (restart), Esc (close)
 
-3. **Functional Minimalism** - Every element serves a purpose, nothing is decorative
+## Deployment
 
-4. **Mathematical Precision** - 8px grid creates harmony and consistency
+**Production URL**: https://voice.samayz.ing
+**Vercel Project**: pdf-voice-tool
+**Domain**: Custom CNAME configured
+**Build**: TypeScript clean, all tests passing
 
-5. **Timeless Design** - This interface will look good in 10 years, not dated by trends
+## Previous Redesign (Nov 16, 2025 - Archived)
 
-## Performance Improvements
+### Rauno Freiberg Minimal Design
 
-- Removed framer-motion dependencies from most components
-- Eliminated complex animations reducing CPU usage
-- Faster initial paint with minimal CSS
-- Better accessibility with system fonts and high contrast
+**Applied Principles**:
+1. "Actions frequent and low in novelty should avoid extraneous animations"
+2. Invisible details - interface disappears, content shines
+3. Functional minimalism - every element serves purpose
+4. Mathematical precision - 8px grid system
+5. Timeless design - good in 10 years
 
-## Result
+**Changes Made**:
+- Monochromatic palette (#fafafa to #171717)
+- Mathematical 8px grid
+- Zero decorative animations
+- System fonts for clarity
+- Removed gradients, shadows, parallax
+- 150ms functional transitions only
 
-The PDF to Voice tool now embodies Rauno Freiberg's design philosophy - a minimal, elegant, timeless interface that prioritizes function over form, with invisible details and mathematical precision. The UI no longer competes with the content but instead provides a clean, professional environment for PDF to audio conversion.
+## Design Philosophy Evolution
 
-The transformation is complete: from a dated gradient-heavy design to a minimal, professional interface that would fit perfectly alongside Rauno's work at rauno.me.
+**Nov 16**: Rauno Freiberg minimalism (neutral, timeless)
+**Nov 29**: Linear/Vercel refinement (modern, blue accent, polished)
+
+Both iterations maintain core principle: **clarity over decoration**. The Nov 29 redesign adds polish and refinement while preserving the minimal foundation.
+
+## Next Steps
+
+See ROADMAP.md for feature backlog:
+- P0: Pause/Resume functionality
+- P1: Playback speed controls
+- P2: Periodic summaries
+- P3: Reading history
+
+---
+
+**Production**: voice.samayz.ing
+**Design**: Linear/Vercel inspired
+**Code**: Streamlined, modern, maintainable

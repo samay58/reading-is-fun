@@ -1,108 +1,56 @@
 /**
- * Minimal Motion Presets
- * Following Rauno Freiberg's principle:
- * "Actions that are frequent and low in novelty should avoid extraneous animations"
+ * Motion Configuration - Minimal Linear/Vercel style
+ * Subtle opacity transitions and small Y transforms only
  */
 
-import { Variants } from 'framer-motion';
+import type { Variants } from 'framer-motion';
 
-// Simple fade for state changes only
+// Timing
+export const DURATION = 0.2;
+export const EASE: [number, number, number, number] = [0.33, 1, 0.68, 1];
+
+// Default transition
+export const transition = { duration: DURATION, ease: EASE };
+
+// Simple fade
 export const fadeIn: Variants = {
-  initial: {
-    opacity: 0,
-  },
-  animate: {
-    opacity: 1,
-    transition: { duration: 0.15 },
-  },
-  exit: {
-    opacity: 0,
-    transition: { duration: 0.15 },
-  },
+  initial: { opacity: 0 },
+  animate: { opacity: 1, transition },
+  exit: { opacity: 0, transition },
 };
 
-// Fade and slight movement for content transitions
-export const fadeInUp: Variants = {
-  initial: {
-    opacity: 0,
-    y: 10,
-  },
-  animate: {
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.15 },
-  },
-  exit: {
-    opacity: 0,
-    y: -10,
-    transition: { duration: 0.15 },
-  },
+// Fade with subtle upward movement
+export const fadeUp: Variants = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0, transition },
+  exit: { opacity: 0, y: -4, transition },
 };
 
-// Simple scale for overlay content
-export const fadeInScale: Variants = {
-  initial: {
-    opacity: 0,
-    scale: 0.98,
-  },
-  animate: {
-    opacity: 1,
-    scale: 1,
-    transition: { duration: 0.15 },
-  },
-  exit: {
-    opacity: 0,
-    scale: 0.98,
-    transition: { duration: 0.15 },
-  },
+// Scale in (for overlays)
+export const scaleIn: Variants = {
+  initial: { opacity: 0, scale: 0.98 },
+  animate: { opacity: 1, scale: 1, transition },
+  exit: { opacity: 0, scale: 0.98, transition },
 };
 
-// Stagger for lists (minimal delay)
+// Stagger container
 export const staggerContainer: Variants = {
   initial: {},
   animate: {
     transition: {
-      staggerChildren: 0.02,
+      staggerChildren: 0.05,
     },
   },
 };
 
 // Stagger item
 export const staggerItem: Variants = {
-  initial: {
-    opacity: 0,
-  },
-  animate: {
-    opacity: 1,
-    transition: { duration: 0.15 },
-  },
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0, transition },
 };
 
-// Page transition (removed blur)
-export const pageTransition = {
-  initial: {
-    opacity: 0,
-  },
-  animate: {
-    opacity: 1,
-    transition: {
-      duration: 0.15,
-    },
-  },
-  exit: {
-    opacity: 0,
-    transition: {
-      duration: 0.15,
-    },
-  },
-};
-
-// REMOVED: All decorative animations
-// - glowPulse
-// - morphBlob
-// - shimmer
-// - bounce
-// - typewriter
-// - progressRing
-// - buttonHover (with lift and shadow)
-// These violate Rauno's principle of avoiding unnecessary decorations
+// Check reduced motion preference
+export function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}

@@ -6,8 +6,11 @@ import { narrateTables } from '@/lib/claude';
 import { processDeepSeekText } from '@/lib/cleaning';
 import { generateAudio } from '@/lib/tts';
 import { estimateCost } from '@/lib/cost';
+import { extractImages, narrateImages, splitTextByPage, cleanupImages } from '@/lib/images';
+import type { ImageNarration } from '@/lib/images';
 
-const MAX_PAGES = 40; // Updated limit (DeepSeek is fast, ~3-4min for 40 pages)
+const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.VERCEL;
+const MAX_PAGES = isLocalDev ? Infinity : 40;
 
 export async function POST(
   req: NextRequest,
@@ -36,6 +39,24 @@ export async function POST(
     const tables = extractHTMLTables(rawText);
     console.log(`[${id}] Found ${tables.length} tables`);
 
+    // Step 2b: Extract and narrate images
+    let imageNarrations: ImageNarration[] = [];
+    try {
+      const images = await extractImages(pdfPath, id);
+      if (images.length > 0) {
+        console.log(`[${id}] Found ${images.length} images, generating narrations...`);
+        const pageContexts = splitTextByPage(rawText);
+        imageNarrations = await narrateImages(images, pageContexts);
+        console.log(`[${id}] Narrated ${imageNarrations.length} images`);
+      } else {
+        console.log(`[${id}] No images detected`);
+      }
+    } catch (error) {
+      console.error(`[${id}] Image extraction/narration failed:`, (error as Error).message);
+    } finally {
+      cleanupImages(id).catch(() => {});
+    }
+
     // Step 3: Generate context-aware narrations for tables
     console.log(`[${id}] Generating table narrations (with context)...`);
     const narrations = tables.length > 0
@@ -44,7 +65,7 @@ export async function POST(
 
     // Step 4: Process text (replace tables, clean scratch text, prepare for narration)
     console.log(`[${id}] Cleaning and processing text...`);
-    const cleanText = processDeepSeekText(rawText, tables, narrations);
+    const cleanText = processDeepSeekText(rawText, tables, narrations, imageNarrations);
 
     // Calculate exact cost and audio duration
     const { calculateExactCost, estimateAudioDuration } = await import('@/lib/cost');

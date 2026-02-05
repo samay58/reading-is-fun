@@ -1,17 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type { HTMLTable } from './html-tables';
 import { parseHTMLTable, tableToMarkdown } from './html-tables';
-
-let anthropic: Anthropic | null = null;
-
-function getAnthropicClient(): Anthropic {
-  if (!anthropic) {
-    anthropic = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    });
-  }
-  return anthropic;
-}
+import { chatCompletion } from './deepinfra-llm';
 
 export async function narrateTable(table: HTMLTable): Promise<string> {
   // Parse HTML table to readable format
@@ -42,28 +31,28 @@ Example style:
 
 Generate the narration (2-4 sentences):`;
 
-  const client = getAnthropicClient();
-  const message = await client.messages.create({
-    model: 'claude-3-5-haiku-20241022',
-    max_tokens: 600,
-    messages: [{
-      role: 'user',
-      content: prompt,
-    }],
-  });
-
-  return message.content[0].type === 'text'
-    ? message.content[0].text.trim()
-    : markdown; // Fallback to raw table if Claude fails
+  try {
+    const narration = await chatCompletion(prompt, { maxTokens: 600 });
+    return narration || markdown; // Fallback to raw table if empty
+  } catch (error) {
+    console.error('Table narration failed:', error);
+    return markdown; // Fallback to raw table on error
+  }
 }
 
 export async function narrateTables(tables: HTMLTable[]): Promise<Map<number, string>> {
   const narrations = new Map<number, string>();
 
-  // Process tables in parallel (faster)
+  // Process tables in parallel (faster) with timeout protection
   const promises = tables.map(async (table) => {
     try {
-      const narration = await narrateTable(table);
+      // Add 30-second timeout to prevent infinite hangs
+      const narrationPromise = narrateTable(table);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Table narration timeout after 30s')), 30000)
+      );
+
+      const narration = await Promise.race([narrationPromise, timeoutPromise]);
       return { index: table.index, narration };
     } catch (error) {
       console.error(`Failed to narrate table ${table.index}:`, error);
@@ -96,17 +85,11 @@ Example: "Display 1 presents a timeline comparing technology adoption across thr
 
 Narration:`;
 
-  const client = getAnthropicClient();
-  const message = await client.messages.create({
-    model: 'claude-3-5-haiku-20241022',
-    max_tokens: 300,
-    messages: [{
-      role: 'user',
-      content: prompt,
-    }],
-  });
-
-  return message.content[0].type === 'text'
-    ? message.content[0].text.trim()
-    : displayText; // Fallback if Claude fails
+  try {
+    const narration = await chatCompletion(prompt, { maxTokens: 300 });
+    return narration || displayText; // Fallback if empty
+  } catch (error) {
+    console.error('Display description failed:', error);
+    return displayText; // Fallback on error
+  }
 }

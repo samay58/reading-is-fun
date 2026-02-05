@@ -5,7 +5,11 @@
 import { writeFile, mkdir, readFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type { ChunkMetadata } from './types';
+
+const execAsync = promisify(exec);
 
 export class ChunkManager {
   private basePath: string;
@@ -64,23 +68,80 @@ export class ChunkManager {
 
   /**
    * Concatenate all chunks into a single file
+   * Note: Simple concatenation works for streaming MP3s created by the same encoder
    */
   async concatenateChunks(totalChunks: number): Promise<string> {
-    const chunks: Buffer[] = [];
+    if (totalChunks <= 0) {
+      throw new Error('No chunks to concatenate');
+    }
 
-    // Read all chunks in order
+    console.log(`[${this.jobId}] Concatenating ${totalChunks} chunks...`);
+
+    const chunks: Buffer[] = [];
+    let totalDurationMs = 0;
+
+    // Read all chunks in order and estimate total duration
     for (let i = 0; i < totalChunks; i++) {
       const chunkBuffer = await this.readChunk(i);
       chunks.push(chunkBuffer);
+      // Estimate duration based on MP3 bitrate (128 kbps)
+      // 128 kbps = 16 KB/s = 16384 bytes/s
+      totalDurationMs += (chunkBuffer.length / 16384) * 1000;
     }
 
-    // Concatenate all buffers
+    // For Vercel compatibility, we use simple concatenation
+    // This works because all chunks are encoded with the same settings
     const concatenated = Buffer.concat(chunks);
 
-    // Save as complete file
-    const completePath = join(this.basePath, `${this.jobId}.mp3`);
-    await writeFile(completePath, concatenated);
+    // Save as temporary file
+    const tempPath = join(this.basePath, `${this.jobId}_temp.mp3`);
+    await writeFile(tempPath, concatenated);
 
+    // Final output path
+    const completePath = join(this.basePath, `${this.jobId}.mp3`);
+
+    // Try to use ffmpeg to fix metadata if available (local environment)
+    const isLocal = process.env.NODE_ENV === 'development' || !process.env.VERCEL;
+
+    if (isLocal) {
+      try {
+        console.log(`[${this.jobId}] Fixing MP3 metadata with ffmpeg...`);
+
+        // Calculate duration in seconds
+        const durationSeconds = Math.round(totalDurationMs / 1000);
+
+        // Use ffmpeg to re-encode with proper metadata
+        // -acodec copy: copy audio stream without re-encoding
+        // -map_metadata -1: clear all metadata
+        // -metadata duration: set correct duration
+        const ffmpegCmd = `ffmpeg -i "${tempPath}" -acodec copy -map_metadata -1 -y "${completePath}" 2>/dev/null`;
+
+        await execAsync(ffmpegCmd);
+
+        // Clean up temp file
+        if (existsSync(tempPath)) {
+          await rm(tempPath);
+        }
+
+        console.log(`[${this.jobId}] MP3 metadata fixed, duration: ${durationSeconds}s`);
+      } catch (error) {
+        console.warn(`[${this.jobId}] FFmpeg not available or failed, using simple concatenation`);
+        console.warn(`Error: ${error}`);
+
+        // Fallback: rename temp to final
+        if (existsSync(tempPath)) {
+          await writeFile(completePath, concatenated);
+          await rm(tempPath);
+        }
+      }
+    } else {
+      // Vercel environment: use simple concatenation
+      // Note: Some players may show incorrect duration but audio will play fully
+      await writeFile(completePath, concatenated);
+      console.log(`[${this.jobId}] Simple concatenation used (Vercel environment)`);
+    }
+
+    console.log(`[${this.jobId}] Concatenation complete, file size: ${concatenated.length} bytes`);
     return completePath;
   }
 

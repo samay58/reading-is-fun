@@ -1,5 +1,7 @@
 import type { HTMLTable } from './html-tables';
-import { cleanDeepSeekOutput, prepareForNarration } from './text-cleaner';
+import { cleanDeepSeekOutput, prepareForNarration, removeLowValueSections } from './text-cleaner';
+import type { ImageNarration } from './images';
+import { injectImageNarrations } from './images';
 
 export function replaceTablesWithNarrations(
   text: string,
@@ -28,9 +30,15 @@ export function replaceTablesWithNarrations(
 export function processDeepSeekText(
   rawText: string,
   tables: HTMLTable[],
-  tableNarrations: Map<number, string>
+  tableNarrations: Map<number, string>,
+  imageNarrations: ImageNarration[] = []
 ): string {
   let processed = rawText;
+
+  // Step 0: Insert image narrations near their pages before any other transforms
+  if (imageNarrations.length > 0) {
+    processed = injectImageNarrations(processed, imageNarrations);
+  }
 
   // Step 1: Replace HTML tables with narrations
   processed = replaceTablesWithNarrations(processed, tables, tableNarrations);
@@ -38,8 +46,21 @@ export function processDeepSeekText(
   // Step 2: Clean DeepSeek artifacts and scratch text
   processed = cleanDeepSeekOutput(processed);
 
-  // Step 3: Prepare for narration (expand abbreviations, etc.)
+  // Step 3: Remove low-value/admin sections that don't help the listener
+  processed = removeLowValueSections(processed);
+
+  // Step 4: Prepare for narration (expand abbreviations, etc.)
   processed = prepareForNarration(processed);
+
+  // Safety: if cleaning removes too much, fall back to the raw OCR text
+  // Check both empty and suspiciously short (less than 10% of original)
+  if (!processed.trim()) {
+    console.warn('[Cleaning] Clean text empty after processing, falling back to raw OCR text');
+    processed = rawText;
+  } else if (processed.length < rawText.length * 0.1 && rawText.length > 200) {
+    console.warn(`[Cleaning] Clean text suspiciously short (${processed.length} vs ${rawText.length} chars, ${Math.round(processed.length/rawText.length*100)}%), falling back to raw OCR text`);
+    processed = rawText;
+  }
 
   return processed;
 }

@@ -4,7 +4,7 @@
  * Based on actual Inworld AI API documentation
  */
 
-import { TTSProvider, TTSOptions, TTSMetrics, TTSError } from '../types';
+import { TTSProvider, TTSOptions, TTSMetrics, TTSError } from '../../types';
 
 interface InworldVoice {
   id: string;
@@ -17,7 +17,7 @@ export class InworldProvider implements TTSProvider {
   name = 'inworld';
   priority = 1; // Higher priority due to lower cost
   costPer1MChars = 10; // $10 per 1M characters (based on actual pricing: $0.000640 per 64 chars)
-  maxCharsPerChunk = 2000; // Inworld API limit is 2000 characters per request
+  maxCharsPerChunk = 2000; // Inworld API limit is 2000 characters per request (keep fixed)
 
   private apiKey: string;
   private workspaceId: string;
@@ -87,7 +87,7 @@ export class InworldProvider implements TTSProvider {
       const voiceId = this.selectVoiceForEmotion(options?.emotion) || this.defaultVoice;
 
       // Map speed to Inworld's speaking_rate parameter
-      const speakingRate = options?.speed || 1.1;
+      const speakingRate = options?.speed || 1.05;
 
       const response = await fetch(`${this.baseUrl}/voice`, {
         method: 'POST',
@@ -159,9 +159,9 @@ export class InworldProvider implements TTSProvider {
     return 'Dennis';
   }
 
-  estimateCost(text: string): number {
+  estimateCost(text: string | number): number {
     // Inworld charges per character
-    const characters = text.length;
+    const characters = typeof text === 'number' ? text : text.length;
     return (characters / 1_000_000) * this.costPer1MChars;
   }
 
@@ -177,7 +177,7 @@ export class InworldProvider implements TTSProvider {
   ) {
     this.metrics.totalRequests++;
     this.metrics.totalCharacters += characters;
-    this.metrics.totalCost += this.estimateCost(characters.toString());
+    this.metrics.totalCost += this.estimateCost(characters);
 
     // Update average latency
     const prevTotal = this.metrics.averageLatency * (this.metrics.totalRequests - 1);

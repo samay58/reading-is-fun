@@ -13,12 +13,21 @@ export function estimateCost(pageCount: number, tableCount: number = 0) {
   };
 }
 
-export function calculateExactCost(charCount: number, tableCount: number) {
+// Cost for Fal.ai Nano Banana Pro artwork generation
+export const ARTWORK_COST = 0.15;
+
+export function calculateExactCost(charCount: number, tableCount: number, hasArtwork: boolean = false) {
+  const parsing = 0;
+  const tables = tableCount * 0.015;
+  const tts = (charCount / 1000) * 0.030;
+  const artwork = hasArtwork ? ARTWORK_COST : 0;
+
   return {
-    parsing: 0, // DeepSeek OCR is FREE
-    tables: tableCount * 0.015, // Claude Haiku per table ($0.015/table)
-    tts: (charCount / 1000) * 0.030, // OpenAI tts-1-hd ($0.030/1K chars)
-    total: (tableCount * 0.015) + ((charCount / 1000) * 0.030),
+    parsing, // DeepSeek OCR is FREE
+    tables, // Claude Haiku per table ($0.015/table)
+    tts, // OpenAI tts-1-hd ($0.030/1K chars)
+    artwork, // Fal.ai Nano Banana Pro ($0.15/image)
+    total: parsing + tables + tts + artwork,
   };
 }
 

@@ -1,21 +1,25 @@
 'use client';
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { Play, Pause, Download, ChevronLeft } from 'lucide-react';
-import type { StreamEvent, ChunkReadyEvent } from '@/lib/streaming/types';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Play,
+  Pause,
+  RotateCcw,
+  RotateCw,
+  Volume2,
+  VolumeX,
+  Download,
+  Sparkles,
+  X,
+  FileText
+} from 'lucide-react';
+import { fadeUp } from '@/lib/motion';
+import type { StreamEvent, ChunkReadyEvent, ArtworkReadyEvent } from '@/lib/streaming/types';
 
-// Helper to convert base64 to Blob
-function base64ToBlob(base64: string, mimeType: string): Blob {
-  const byteCharacters = atob(base64);
-  const byteNumbers = new Array(byteCharacters.length);
-  for (let i = 0; i < byteCharacters.length; i++) {
-    byteNumbers[i] = byteCharacters.charCodeAt(i);
-  }
-  const byteArray = new Uint8Array(byteNumbers);
-  return new Blob([byteArray], { type: mimeType });
-}
+// --- Types ---
 
-interface StreamingPlayerProps {
+interface Props {
   documentId: string;
   fileName: string;
   file: File;
@@ -29,379 +33,766 @@ interface AudioChunk {
   status: 'pending' | 'ready' | 'played';
 }
 
-export function StreamingPlayer({ documentId, fileName, file, onReset }: StreamingPlayerProps) {
+type PlayerStatus = 'connecting' | 'extracting' | 'processing' | 'complete' | 'error';
+type ArtworkStatus = 'none' | 'generating' | 'ready' | 'failed';
+
+// --- Utilities ---
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const byteCharacters = atob(base64);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let i = 0; i < byteCharacters.length; i++) {
+    byteNumbers[i] = byteCharacters.charCodeAt(i);
+  }
+  return new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+}
+
+function formatTime(seconds: number): string {
+  if (isNaN(seconds)) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+}
+
+// --- Icon Button Component ---
+
+function IconButton({
+  icon: Icon,
+  onClick,
+  active = false,
+  size = 20,
+  disabled = false,
+  className = '',
+  title,
+}: {
+  icon: React.ElementType;
+  onClick?: () => void;
+  active?: boolean;
+  size?: number;
+  disabled?: boolean;
+  className?: string;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        position: 'relative',
+        padding: '0.75rem',
+        borderRadius: '1rem',
+        border: 'none',
+        background: active ? 'var(--accent-muted)' : 'transparent',
+        color: active ? 'var(--accent)' : disabled ? 'var(--faint)' : 'var(--muted)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.4 : 1,
+        transition: 'all 150ms ease',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) {
+          e.currentTarget.style.background = 'var(--surface-elevated)';
+          e.currentTarget.style.color = 'var(--foreground)';
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!disabled) {
+          e.currentTarget.style.background = active ? 'var(--accent-muted)' : 'transparent';
+          e.currentTarget.style.color = active ? 'var(--accent)' : 'var(--muted)';
+        }
+      }}
+      className={className}
+    >
+      <Icon size={size} strokeWidth={2.5} />
+    </button>
+  );
+}
+
+export function StreamingPlayer({ documentId, fileName, file, onReset }: Props) {
+  // --- Refs ---
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const progressRef = useRef<HTMLDivElement>(null);
+
+  // --- State ---
   const [chunks, setChunks] = useState<AudioChunk[]>([]);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [totalChunks, setTotalChunks] = useState<number | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [streamStatus, setStreamStatus] = useState<'connecting' | 'extracting' | 'processing' | 'complete' | 'error'>('connecting');
+  const [status, setStatus] = useState<PlayerStatus>('connecting');
   const [error, setError] = useState<string | null>(null);
-  const [stats, setStats] = useState<any>(null);
-  const [extractionInfo, setExtractionInfo] = useState<{
-    charCount?: number;
-    tableCount?: number;
-    pageCount?: number;
-  }>({});
 
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  // Playback state
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isHoveringScrubber, setIsHoveringScrubber] = useState(false);
+  const [hoverPosition, setHoverPosition] = useState<number | null>(null);
+  const [pageCount, setPageCount] = useState<number | null>(null);
 
-  // Connect to SSE stream via POST (Vercel-compatible)
+  // Artwork state
+  const [artworkStatus, setArtworkStatus] = useState<ArtworkStatus>('none');
+  const [artworkUrl, setArtworkUrl] = useState<string | null>(null);
+
+  // --- Derived State ---
+  const chunksReady = chunks.filter((c) => c?.status === 'ready').length;
+  const generationProgress = totalChunks ? (chunksReady / totalChunks) * 100 : 0;
+  const isGenerating = status === 'extracting' || status === 'processing';
+  const hasStartedPlayback = chunksReady > 0;
+  const displayName = fileName.replace('.pdf', '').replace(/_/g, ' ');
+
+  // --- SSE & Stream Logic ---
+
   useEffect(() => {
     let aborted = false;
+    const controller = new AbortController();
 
-    async function startProcessing() {
+    async function start() {
       try {
-        setStreamStatus('extracting');
-
-        // Send file via POST
+        setStatus('extracting');
         const formData = new FormData();
         formData.append('file', file);
 
-        const response = await fetch(`/api/process-stream/${documentId}`, {
+        const res = await fetch(`/api/process-stream/${documentId}`, {
           method: 'POST',
           body: formData,
+          signal: controller.signal,
         });
 
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('No response body');
-        }
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('No response body');
 
         const decoder = new TextDecoder();
         let buffer = '';
 
         while (!aborted) {
           const { done, value } = await reader.read();
-
-          if (done) break;
+          if (done || aborted) break;
 
           buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
+          const events = buffer.split('\n\n');
+          buffer = events.pop() || '';
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') continue;
-
-              try {
-                const event: StreamEvent = JSON.parse(data);
-                handleStreamEvent(event);
-              } catch (err) {
-                console.error('Failed to parse SSE event:', err);
+          for (const block of events) {
+            for (const line of block.trim().split('\n')) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+                try {
+                  handleEvent(JSON.parse(data));
+                } catch (e) {
+                  console.error('Parse error', e);
+                }
               }
             }
           }
         }
       } catch (err: any) {
-        if (!aborted) {
-          console.error('Streaming error:', err);
-          setStreamStatus('error');
-          setError(err.message || 'Processing failed. Please try again.');
+        if (!aborted && err.name !== 'AbortError') {
+          setStatus('error');
+          setError(err.message || 'Processing failed');
         }
       }
     }
 
-    startProcessing();
-
+    start();
     return () => {
       aborted = true;
-      // Clean up blob URLs to prevent memory leaks
-      chunks.forEach(chunk => {
-        if (chunk?.audioUrl) {
-          URL.revokeObjectURL(chunk.audioUrl);
-        }
-      });
+      controller.abort();
+      chunks.forEach((c) => c?.audioUrl && URL.revokeObjectURL(c.audioUrl));
+      if (artworkUrl) URL.revokeObjectURL(artworkUrl);
     };
-  }, [documentId, file, chunks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentId, file]);
 
-  const handleStreamEvent = (event: StreamEvent) => {
+  function handleEvent(event: StreamEvent) {
     switch (event.type) {
       case 'extraction_start':
-        setStreamStatus('extracting');
+        setStatus('extracting');
         break;
-
       case 'extraction_complete':
-        setStreamStatus('processing');
+        setStatus('processing');
         setTotalChunks(event.totalChunks);
-        setExtractionInfo({
-          charCount: event.charCount,
-          tableCount: event.tableCount,
-          pageCount: event.pageCount,
-        });
+        setPageCount(event.pageCount || null);
         break;
-
-      case 'chunk_processing':
+      case 'artwork_generating':
+        setArtworkStatus('generating');
         break;
-
+      case 'artwork_ready':
+        handleArtworkReady(event as ArtworkReadyEvent);
+        break;
       case 'chunk_ready':
-        handleChunkReady(event);
+        handleChunkReady(event as ChunkReadyEvent);
         break;
-
       case 'complete':
-        setStreamStatus('complete');
+        setStatus('complete');
         setDownloadUrl(event.downloadUrl);
-        setStats(event.stats);
-        if (eventSourceRef.current) {
-          eventSourceRef.current.close();
-        }
         break;
-
       case 'error':
-        setStreamStatus('error');
+        setStatus('error');
         setError(event.message);
-        if (eventSourceRef.current) {
-          eventSourceRef.current.close();
-        }
         break;
     }
-  };
+  }
 
-  const handleChunkReady = (event: ChunkReadyEvent) => {
-    // Convert base64 audio data to blob URL
-    const audioBlob = base64ToBlob(event.audioData, 'audio/mpeg');
-    const blobUrl = URL.createObjectURL(audioBlob);
+  function handleArtworkReady(event: ArtworkReadyEvent) {
+    const blob = base64ToBlob(event.imageData, event.mimeType);
+    const url = URL.createObjectURL(blob);
+    setArtworkUrl(url);
+    setArtworkStatus('ready');
+  }
 
-    const newChunk: AudioChunk = {
-      index: event.index,
-      audioUrl: blobUrl,
-      duration: event.duration,
-      status: 'ready',
-    };
+  function handleChunkReady(event: ChunkReadyEvent) {
+    const blob = base64ToBlob(event.audioData, 'audio/mpeg');
+    const url = URL.createObjectURL(blob);
 
-    setChunks(prev => {
+    setChunks((prev) => {
       const updated = [...prev];
-      updated[event.index] = newChunk;
+      updated[event.index] = { index: event.index, audioUrl: url, duration: event.duration, status: 'ready' };
       return updated;
     });
 
-    // Auto-play first chunk when ready
-    if (event.index === 0 && !isPlaying && audioRef.current) {
-      audioRef.current.src = blobUrl;
+    // Auto-play first chunk
+    if (event.index === 0 && audioRef.current) {
+      audioRef.current.src = url;
       audioRef.current.play()
         .then(() => setIsPlaying(true))
-        .catch(err => console.error('Play failed:', err));
+        .catch(() => console.log('Autoplay blocked'));
     }
-  };
+  }
 
   const handleChunkEnd = useCallback(() => {
-    if (currentChunkIndex < chunks.length - 1) {
-      const nextIndex = currentChunkIndex + 1;
-      const nextChunk = chunks[nextIndex];
+    const nextIndex = currentChunkIndex + 1;
+    const nextChunk = chunks[nextIndex];
 
-      if (nextChunk && nextChunk.status === 'ready' && audioRef.current) {
-        setCurrentChunkIndex(nextIndex);
-        audioRef.current.src = nextChunk.audioUrl;
-        audioRef.current.play()
-          .then(() => {
-            setChunks(prev => {
-              const updated = [...prev];
-              if (updated[currentChunkIndex]) {
-                updated[currentChunkIndex].status = 'played';
-              }
-              return updated;
-            });
-          })
-          .catch(err => {
-            console.error('Failed to play next chunk:', err);
-            setIsPlaying(false);
-          });
-      } else {
-        setIsPlaying(false);
-      }
+    if (nextChunk?.status === 'ready' && audioRef.current) {
+      setCurrentChunkIndex(nextIndex);
+      audioRef.current.src = nextChunk.audioUrl;
+      audioRef.current.play().catch(() => setIsPlaying(false));
     } else {
       setIsPlaying(false);
     }
   }, [currentChunkIndex, chunks]);
 
-  const togglePlayPause = () => {
+  const togglePlay = useCallback(() => {
     if (!audioRef.current) return;
 
     if (isPlaying) {
       audioRef.current.pause();
       setIsPlaying(false);
     } else {
-      const nextUnplayed = chunks.findIndex((c, i) => i >= currentChunkIndex && c.status === 'ready');
-      if (nextUnplayed !== -1) {
-        setCurrentChunkIndex(nextUnplayed);
-        audioRef.current.src = chunks[nextUnplayed].audioUrl;
+      const chunk = chunks[currentChunkIndex];
+      if (chunk?.status === 'ready') {
+        if (!audioRef.current.src || audioRef.current.ended) {
+          audioRef.current.src = chunk.audioUrl;
+        }
         audioRef.current.play()
           .then(() => setIsPlaying(true))
-          .catch(err => console.error('Play failed:', err));
+          .catch(() => {});
       }
+    }
+  }, [isPlaying, chunks, currentChunkIndex]);
+
+  const restart = useCallback(() => {
+    const first = chunks[0];
+    if (first?.status === 'ready' && audioRef.current) {
+      setCurrentChunkIndex(0);
+      audioRef.current.src = first.audioUrl;
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  }, [chunks]);
+
+  const handleTimeUpdate = () => {
+    if (audioRef.current) {
+      setCurrentTime(audioRef.current.currentTime);
+      setDuration(audioRef.current.duration || 0);
     }
   };
 
-  const getChunksReadyCount = () => chunks.filter(c => c?.status === 'ready').length;
-  const canPlay = getChunksReadyCount() > 0;
-
-  const getProgressMessage = () => {
-    if (streamStatus === 'connecting') return 'Connecting...';
-    if (streamStatus === 'extracting') return 'Extracting text from PDF...';
-    if (streamStatus === 'processing') {
-      const readyChunks = getChunksReadyCount();
-      if (totalChunks) {
-        return `Generating audio: ${readyChunks}/${totalChunks} chunks ready`;
-      }
-      return 'Processing audio...';
-    }
-    if (streamStatus === 'complete') return 'Processing complete';
-    if (streamStatus === 'error') return error || 'An error occurred';
-    return '';
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!progressRef.current || !audioRef.current || !duration) return;
+    const rect = progressRef.current.getBoundingClientRect();
+    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    audioRef.current.currentTime = pos * duration;
+    setCurrentTime(pos * duration);
   };
+
+  const skipForward = () => {
+    if (audioRef.current) audioRef.current.currentTime += 10;
+  };
+
+  const skipBackward = () => {
+    if (audioRef.current) audioRef.current.currentTime -= 10;
+  };
+
+  // --- Effects ---
+
+  // Volume control
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = volume;
+      audioRef.current.muted = isMuted;
+    }
+  }, [volume, isMuted]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement) return;
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (chunksReady > 0) togglePlay();
+      } else if (e.code === 'KeyR') {
+        e.preventDefault();
+        restart();
+      } else if (e.code === 'Escape') {
+        e.preventDefault();
+        onReset();
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        skipForward();
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        skipBackward();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [togglePlay, restart, onReset, chunksReady]);
+
+  // --- Render ---
 
   return (
-    <div className="space-y-6">
-      {/* Header Card */}
-      <div className="card">
-        <div className="flex justify-between items-start mb-6">
-          <div>
-            <h2 className="text-xl font-medium mb-1">{fileName}</h2>
-            <div className="flex items-center gap-2 text-sm text-muted">
-              {streamStatus === 'extracting' && <div className="spinner" style={{ width: '14px', height: '14px' }} />}
-              {streamStatus === 'processing' && <div className="w-1 h-1 rounded-full bg-[var(--accent)]" />}
-              {streamStatus === 'complete' && <div className="w-1 h-1 rounded-full bg-[var(--success)]" />}
-              {streamStatus === 'error' && <div className="w-1 h-1 rounded-full bg-[var(--error)]" />}
-              <span>{getProgressMessage()}</span>
-            </div>
+    <motion.div
+      initial="initial"
+      animate="animate"
+      variants={fadeUp}
+      style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+    >
+      {/* --- Player Card --- */}
+      <div
+        className="card"
+        style={{
+          width: '100%',
+          maxWidth: '28rem',
+          padding: '1.5rem',
+          borderRadius: '1.5rem',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header Actions */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+          <IconButton icon={FileText} size={18} title="Document" />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <span style={{
+              fontSize: '0.625rem',
+              fontWeight: 700,
+              letterSpacing: '0.15em',
+              color: 'var(--faint)',
+              textTransform: 'uppercase',
+            }}>
+              {isGenerating ? 'Synthesizing' : status === 'error' ? 'Error' : 'Ready'}
+            </span>
           </div>
-          <button
-            onClick={onReset}
-            className="flex items-center gap-1 text-sm"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            <span>Convert another</span>
-          </button>
+          <IconButton icon={X} onClick={onReset} title="Close" />
         </div>
 
-        {/* Extraction Info */}
-        {extractionInfo.pageCount && (
-          <div className="grid grid-cols-3 gap-4 p-4 bg-[var(--surface)] border border-[var(--border)] rounded-lg">
-            <div className="text-center">
-              <div className="text-xs text-muted">Pages</div>
-              <div className="text-lg font-medium">{extractionInfo.pageCount}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-xs text-muted">Tables</div>
-              <div className="text-lg font-medium">{extractionInfo.tableCount || 0}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-xs text-muted">Characters</div>
-              <div className="text-lg font-medium">
-                {extractionInfo.charCount ? `${(extractionInfo.charCount / 1000).toFixed(1)}K` : '-'}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Progress Bar */}
-        {totalChunks && totalChunks > 0 && streamStatus === 'processing' && (
-          <div className="mt-6">
-            <div className="flex justify-between text-sm mb-2">
-              <span className="text-muted">Chunks ready</span>
-              <span className="font-medium">
-                {getChunksReadyCount()}/{totalChunks}
-              </span>
-            </div>
-            <div className="progress">
-              <div
-                className="progress-bar"
-                style={{ width: `${(getChunksReadyCount() / totalChunks) * 100}%` }}
-              />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Player Controls */}
-      {(canPlay || streamStatus === 'complete') && (
-        <div className="card">
-          <audio
-            ref={audioRef}
-            onEnded={handleChunkEnd}
-            preload="auto"
+        {/* --- Artwork Container --- */}
+        <div style={{
+          position: 'relative',
+          aspectRatio: '1 / 1',
+          width: '100%',
+          maxWidth: '260px',
+          margin: '0 auto 1.5rem',
+        }}>
+          {/* Glowing Shadow */}
+          <div
+            className={isPlaying ? 'animate-pulse-glow' : ''}
+            style={{
+              position: 'absolute',
+              inset: '1.5rem',
+              background: 'linear-gradient(to top right, var(--accent-muted), var(--accent-muted))',
+              borderRadius: '1.5rem',
+              filter: 'blur(1.5rem)',
+              opacity: isPlaying ? 0.6 : 0.2,
+              transition: 'opacity 700ms ease',
+            }}
           />
 
-          {/* Controls */}
-          <div className="flex gap-3">
-            <button
-              onClick={togglePlayPause}
-              disabled={!canPlay}
-              className="flex-1 primary"
-            >
-              {isPlaying ? (
-                <>
-                  <Pause className="w-5 h-5" />
-                  <span>Pause</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-5 h-5" />
-                  <span>Play</span>
-                </>
-              )}
-            </button>
+          {/* Main Art Container */}
+          <div style={{
+            position: 'relative',
+            width: '100%',
+            height: '100%',
+            borderRadius: '1.5rem',
+            overflow: 'hidden',
+            boxShadow: '0 10px 40px rgba(0,0,0,0.15)',
+            border: '1px solid var(--border)',
+            background: 'var(--surface-elevated)',
+          }}>
+            {/* The Image (if available) */}
+            {artworkUrl ? (
+              <img
+                src={artworkUrl}
+                alt="Generated artwork"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  transition: 'all 500ms ease-out',
+                  opacity: isPlaying ? 1 : 0.85,
+                  transform: isPlaying ? 'scale(1.05)' : 'scale(1)',
+                }}
+              />
+            ) : (
+              /* Placeholder with document icon */
+              <div style={{
+                width: '100%',
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'var(--surface)',
+              }}>
+                <FileText size={64} strokeWidth={1} style={{ color: 'var(--faint)' }} />
+              </div>
+            )}
 
+            {/* State Overlays */}
+            <div style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: artworkStatus === 'generating' || (isGenerating && !artworkUrl) ? 'rgba(0,0,0,0.5)' : 'transparent',
+              transition: 'background 300ms ease',
+            }}>
+              <AnimatePresence mode="wait">
+                {status === 'error' ? (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    style={{ textAlign: 'center', padding: '1rem' }}
+                  >
+                    <span style={{ color: 'var(--error)', fontSize: '0.875rem', fontWeight: 500 }}>
+                      Generation Failed
+                    </span>
+                    <p style={{ fontSize: '0.625rem', color: 'var(--muted)', marginTop: '0.25rem' }}>
+                      {error}
+                    </p>
+                  </motion.div>
+                ) : (artworkStatus === 'generating' || (isGenerating && !artworkUrl)) ? (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}
+                  >
+                    <Sparkles className="animate-spin-slow" size={32} style={{ color: 'white' }} />
+                    <span style={{
+                      fontSize: '0.75rem',
+                      fontFamily: 'var(--font-mono)',
+                      letterSpacing: '0.1em',
+                      color: 'white',
+                      textTransform: 'uppercase',
+                    }}>
+                      {status === 'extracting' ? 'Reading PDF...' : artworkStatus === 'generating' ? 'Creating artwork...' : 'Generating audio...'}
+                    </span>
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+
+        {/* --- Document Info --- */}
+        <div style={{ marginBottom: '1.5rem', paddingLeft: '0.25rem', paddingRight: '0.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', width: '100%' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h2 style={{
+                fontSize: '1.25rem',
+                fontWeight: 700,
+                letterSpacing: '-0.02em',
+                marginBottom: '0.125rem',
+                lineHeight: 1.2,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                paddingRight: '1rem',
+              }}>
+                {displayName}
+              </h2>
+              <p style={{ fontSize: '0.875rem', fontWeight: 500, color: 'var(--muted)' }}>
+                {pageCount ? `${pageCount} Pages` : 'Document'}
+                {chunksReady > 0 && ` · Part ${currentChunkIndex + 1}`}
+              </p>
+            </div>
+
+            {/* Download Button */}
             {downloadUrl && (
               <a
                 href={downloadUrl}
                 download
-                className="inline-flex items-center gap-2 px-4 py-3 border border-[var(--border)] rounded-lg hover:border-[var(--accent)] transition-colors"
+                style={{
+                  padding: '0.5rem',
+                  background: 'var(--surface-elevated)',
+                  borderRadius: '50%',
+                  color: 'var(--muted)',
+                  transition: 'all 150ms',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                title="Download Full Audio"
               >
-                <Download className="w-5 h-5" />
-                <span>Download</span>
+                <Download size={16} />
               </a>
             )}
           </div>
+        </div>
 
-          {/* Playback Status */}
-          {isPlaying && chunks[currentChunkIndex] && (
-            <p className="mt-4 text-center text-sm text-muted">
-              Playing chunk {currentChunkIndex + 1} of {totalChunks || '?'}
-              {chunks.filter(c => c?.status === 'ready').length < (totalChunks || 0) && (
-                <span> • Processing more...</span>
-              )}
-            </p>
+        {/* --- Scrubber --- */}
+        <div
+          ref={progressRef}
+          onClick={hasStartedPlayback ? handleSeek : undefined}
+          onMouseEnter={() => setIsHoveringScrubber(true)}
+          onMouseLeave={() => {
+            setIsHoveringScrubber(false);
+            setHoverPosition(null);
+          }}
+          onMouseMove={(e) => {
+            if (progressRef.current && hasStartedPlayback) {
+              const rect = progressRef.current.getBoundingClientRect();
+              setHoverPosition(e.clientX - rect.left);
+            }
+          }}
+          style={{
+            position: 'relative',
+            height: '2rem',
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            marginBottom: '1rem',
+            cursor: hasStartedPlayback ? 'pointer' : 'default',
+          }}
+        >
+          {/* Track Background */}
+          <div style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            height: isHoveringScrubber && hasStartedPlayback ? '0.5rem' : '0.25rem',
+            background: 'var(--border)',
+            borderRadius: '9999px',
+            overflow: 'hidden',
+            transition: 'height 150ms ease',
+          }}>
+            {/* Fill */}
+            <div style={{
+              height: '100%',
+              borderRadius: '9999px',
+              background: isGenerating ? 'var(--accent)' : 'var(--foreground)',
+              opacity: isGenerating ? 0.5 : 1,
+              width: isGenerating
+                ? `${generationProgress}%`
+                : `${duration ? (currentTime / duration) * 100 : 0}%`,
+              transition: 'width 100ms linear',
+            }} />
+          </div>
+
+          {/* Hover Tooltip */}
+          {isHoveringScrubber && hoverPosition !== null && hasStartedPlayback && (
+            <div style={{
+              position: 'absolute',
+              top: '-1.5rem',
+              left: hoverPosition,
+              transform: 'translateX(-50%)',
+              background: 'var(--foreground)',
+              color: 'var(--background)',
+              fontSize: '0.625rem',
+              fontWeight: 700,
+              padding: '0.25rem 0.5rem',
+              borderRadius: '0.375rem',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              pointerEvents: 'none',
+            }}>
+              {formatTime((hoverPosition / (progressRef.current?.clientWidth || 1)) * duration)}
+            </div>
           )}
-        </div>
-      )}
 
-      {/* Error State */}
-      {streamStatus === 'error' && (
-        <div className="card border-[var(--error)]">
-          <h3 className="font-medium mb-1">Processing Error</h3>
-          <p className="text-sm text-muted">{error}</p>
-        </div>
-      )}
-
-      {/* Success Stats */}
-      {stats && streamStatus === 'complete' && (
-        <div className="card border-[var(--success)]">
-          <h3 className="font-medium mb-3">Processing Complete</h3>
-          <div className="grid grid-cols-3 gap-4 text-sm">
-            <div>
-              <span className="text-muted">Duration:</span>
-              <span className="ml-1 font-medium">
-                {Math.floor(stats.audioDurationSeconds / 60)}:{String(Math.floor(stats.audioDurationSeconds % 60)).padStart(2, '0')}
-              </span>
-            </div>
-            <div>
-              <span className="text-muted">Time:</span>
-              <span className="ml-1 font-medium">{stats.processingTimeSeconds}s</span>
-            </div>
-            <div>
-              <span className="text-muted">Cost:</span>
-              <span className="ml-1 font-medium">${stats.cost.total.toFixed(2)}</span>
-            </div>
+          {/* Time Labels */}
+          <div style={{
+            position: 'absolute',
+            top: '1.25rem',
+            width: '100%',
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: '0.625rem',
+            fontFamily: 'var(--font-mono)',
+            fontWeight: 500,
+            color: 'var(--faint)',
+            opacity: hasStartedPlayback ? 1 : 0,
+            transition: 'opacity 150ms ease',
+          }}>
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
           </div>
         </div>
-      )}
-    </div>
+
+        {/* --- Main Controls --- */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '1rem',
+          marginBottom: '1.5rem',
+        }}>
+          <IconButton
+            icon={RotateCcw}
+            size={22}
+            disabled={!hasStartedPlayback}
+            onClick={skipBackward}
+            title="Skip back 10s"
+          />
+
+          {/* Play Button */}
+          <button
+            onClick={togglePlay}
+            disabled={!hasStartedPlayback}
+            style={{
+              position: 'relative',
+              width: '4.5rem',
+              height: '4.5rem',
+              background: hasStartedPlayback ? 'var(--accent)' : 'var(--surface-elevated)',
+              border: 'none',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: hasStartedPlayback ? 'pointer' : 'not-allowed',
+              opacity: hasStartedPlayback ? 1 : 0.5,
+              boxShadow: hasStartedPlayback ? '0 4px 20px rgba(0, 112, 243, 0.4)' : 'none',
+              transition: 'all 200ms ease',
+              color: hasStartedPlayback ? 'white' : 'var(--faint)',
+            }}
+            onMouseEnter={(e) => {
+              if (hasStartedPlayback) {
+                e.currentTarget.style.transform = 'scale(1.05)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'scale(1)';
+            }}
+          >
+            {isPlaying ? (
+              <Pause size={28} fill="currentColor" strokeWidth={0} />
+            ) : (
+              <Play size={28} fill="currentColor" strokeWidth={0} style={{ marginLeft: '3px' }} />
+            )}
+          </button>
+
+          <IconButton
+            icon={RotateCw}
+            size={22}
+            disabled={!hasStartedPlayback}
+            onClick={skipForward}
+            title="Skip forward 10s"
+          />
+        </div>
+
+        {/* --- Volume / Footer --- */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          background: 'var(--surface-elevated)',
+          borderRadius: '1rem',
+          padding: '0.75rem',
+          border: '1px solid var(--border)',
+        }}>
+          <button
+            onClick={() => setIsMuted(!isMuted)}
+            style={{
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              color: 'var(--muted)',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+          >
+            {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={isMuted ? 0 : volume}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              setVolume(val);
+              if (audioRef.current) audioRef.current.volume = val;
+              setIsMuted(val === 0);
+            }}
+            style={{
+              flex: 1,
+              height: '4px',
+              background: 'var(--border)',
+              borderRadius: '9999px',
+              appearance: 'none',
+              cursor: 'pointer',
+            }}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '2px', height: '12px' }}>
+            {[1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className={isPlaying ? 'animate-music-bar' : ''}
+                style={{
+                  width: '3px',
+                  background: 'var(--success)',
+                  borderRadius: '9999px',
+                  height: isPlaying ? '12px' : '3px',
+                  animationDelay: `${i * 0.1}s`,
+                  transition: 'height 300ms ease',
+                }}
+              />
+            ))}
+          </div>
+        </div>
+
+        {/* Keyboard hints */}
+        <div style={{
+          marginTop: '1rem',
+          textAlign: 'center',
+          fontSize: '0.625rem',
+          color: 'var(--faint)',
+          opacity: 0.7,
+        }}>
+          <span style={{ fontFamily: 'var(--font-mono)' }}>Space</span> play ·{' '}
+          <span style={{ fontFamily: 'var(--font-mono)' }}>R</span> restart ·{' '}
+          <span style={{ fontFamily: 'var(--font-mono)' }}>Esc</span> close
+        </div>
+      </div>
+
+      {/* Hidden Audio Element */}
+      <audio
+        ref={audioRef}
+        onEnded={handleChunkEnd}
+        onTimeUpdate={handleTimeUpdate}
+        preload="auto"
+      />
+    </motion.div>
   );
 }

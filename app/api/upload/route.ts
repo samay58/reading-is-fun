@@ -3,7 +3,14 @@ import { writeFile } from 'fs/promises';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.VERCEL;
+
+// Allow generous uploads locally for large PDFs (e.g., situational awareness doc),
+// keep a safer ceiling in production. Can be overridden with env vars.
+const DEV_MAX_FILE_MB = parseInt(process.env.MAX_UPLOAD_MB_DEV || process.env.MAX_UPLOAD_MB || '250', 10);
+const PROD_MAX_FILE_MB = parseInt(process.env.MAX_UPLOAD_MB || '10', 10);
+const MAX_FILE_SIZE = (isLocalDev ? DEV_MAX_FILE_MB : PROD_MAX_FILE_MB) * 1024 * 1024;
+
 const ALLOWED_TYPE = 'application/pdf';
 
 export async function POST(req: NextRequest) {
@@ -27,7 +34,7 @@ export async function POST(req: NextRequest) {
 
     if (file.size > MAX_FILE_SIZE) {
       return NextResponse.json(
-        { error: 'File too large. Maximum size: 10MB' },
+        { error: `File too large. Maximum size: ${Math.floor(MAX_FILE_SIZE / (1024 * 1024))}MB` },
         { status: 400 }
       );
     }

@@ -10,8 +10,16 @@ import {
   TTSError,
   TTSQualityMetrics
 } from './types';
+// ARCHIVED: Old providers moved to _deprecated/
+// import { HathoraProvider } from './providers/hathora';
+// import { InworldProvider } from './providers/inworld';
+
+// New provider chain (2025-11 migration)
+import { DeepInfraProvider } from './providers/deepinfra';
+import { OrpheusProvider } from './providers/orpheus';
+import { MiniMaxProvider } from './providers/minimax';
 import { OpenAIProvider } from './providers/openai';
-import { InworldProvider } from './providers/inworld';
+import { SesameProvider } from './providers/sesame';
 
 export class TTSManager {
   private providers: TTSProvider[] = [];
@@ -26,14 +34,40 @@ export class TTSManager {
   }
 
   private initializeProviders() {
-    // Initialize providers in priority order
-    if (this.config.inworld) {
-      this.providers.push(new InworldProvider(this.config.inworld));
+    // Initialize providers in priority order (lowest cost first)
+
+    // Priority 0: Sesame CSM-1B ($1.50/M) - Natural conversational voice (when selected)
+    if (this.config.sesame) {
+      this.providers.push(new SesameProvider(this.config.sesame));
     }
 
+    // Priority 0: DeepInfra Kokoro ($0.62/M) - Ultra-low cost primary
+    if (this.config.deepinfra) {
+      this.providers.push(new DeepInfraProvider(this.config.deepinfra));
+    }
+
+    // Priority 1: Orpheus via Together.ai ($15/M) - Emotion tags
+    if (this.config.orpheus) {
+      this.providers.push(new OrpheusProvider(this.config.orpheus));
+    }
+
+    // Priority 2: MiniMax Speech-02-Turbo ($30/M) - Quality fallback
+    if (this.config.minimax) {
+      this.providers.push(new MiniMaxProvider(this.config.minimax));
+    }
+
+    // Priority 3: OpenAI TTS-1-HD ($30/M) - Final safety net
     if (this.config.openai) {
       this.providers.push(new OpenAIProvider(this.config.openai));
     }
+
+    // ARCHIVED: Old providers (Hathora, Inworld) removed 2025-11
+    // if (this.config.hathora) {
+    //   this.providers.push(new HathoraProvider(this.config.hathora));
+    // }
+    // if (this.config.inworld) {
+    //   this.providers.push(new InworldProvider(this.config.inworld));
+    // }
 
     // Sort by priority (lower number = higher priority)
     this.providers.sort((a, b) => a.priority - b.priority);
@@ -121,7 +155,7 @@ export class TTSManager {
         console.error(`TTS provider ${selectedProvider.name} failed:`, error);
 
         // Find next available provider in fallback chain
-        selectedProvider = await this.getNextProvider(attemptedProviders);
+        selectedProvider = await this.getNextProvider(attemptedProviders, text.length);
       }
     }
 
@@ -136,9 +170,12 @@ export class TTSManager {
   /**
    * Get next available provider that hasn't been attempted
    */
-  private async getNextProvider(attempted: Set<string>): Promise<TTSProvider | null> {
+  private async getNextProvider(attempted: Set<string>, textLength?: number): Promise<TTSProvider | null> {
     for (const provider of this.providers) {
       if (!attempted.has(provider.name) && await provider.isAvailable()) {
+        if (textLength && provider.maxCharsPerChunk < textLength) {
+          continue;
+        }
         return provider;
       }
     }
@@ -278,5 +315,17 @@ export class TTSManager {
 
     // Return the minimum (most restrictive) chunk size
     return Math.min(...available);
+  }
+
+  /**
+   * Get the chunk size for the primary (cheapest available) provider.
+   * Useful to avoid over-fragmenting when fallback providers have stricter limits.
+   */
+  async getPrimaryChunkSize(): Promise<number> {
+    const primary = await this.getPrimaryProvider();
+    if (primary) {
+      return primary.maxCharsPerChunk;
+    }
+    return 2000;
   }
 }

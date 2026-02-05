@@ -5,6 +5,8 @@
 export type StreamEventType =
   | 'extraction_start'
   | 'extraction_complete'
+  | 'artwork_generating'
+  | 'artwork_ready'
   | 'chunk_processing'
   | 'chunk_ready'
   | 'complete'
@@ -58,9 +60,24 @@ export interface ErrorEvent extends BaseStreamEvent {
   recoverable: boolean;
 }
 
+export interface ArtworkGeneratingEvent extends BaseStreamEvent {
+  type: 'artwork_generating';
+  prompt: string;
+}
+
+export interface ArtworkReadyEvent extends BaseStreamEvent {
+  type: 'artwork_ready';
+  imageData: string;
+  mimeType: 'image/png' | 'image/jpeg';
+  prompt: string;
+  cost: number;
+}
+
 export type StreamEvent =
   | ExtractionStartEvent
   | ExtractionCompleteEvent
+  | ArtworkGeneratingEvent
+  | ArtworkReadyEvent
   | ChunkProcessingEvent
   | ChunkReadyEvent
   | CompleteEvent
@@ -77,6 +94,7 @@ export interface ProcessingStats {
     parsing: number;
     tables: number;
     tts: number;
+    artwork: number;
     total: number;
   };
 }

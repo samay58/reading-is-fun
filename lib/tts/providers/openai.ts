@@ -49,7 +49,7 @@ export class OpenAIProvider implements TTSProvider {
 
     try {
       // Map speed to OpenAI's speed parameter
-      const speed = options?.speed || 1.1; // Default to 1.1x for readability
+      const speed = options?.speed || 1.05; // Slightly brisk but still clear
 
       // Select voice based on emotion hint (if provided)
       const voice = this.selectVoiceForEmotion(options?.emotion) || this.defaultVoice;
@@ -98,9 +98,9 @@ export class OpenAIProvider implements TTSProvider {
     return emotionVoiceMap[emotion] || null;
   }
 
-  estimateCost(text: string): number {
+  estimateCost(text: string | number): number {
     // OpenAI charges per character
-    const characters = text.length;
+    const characters = typeof text === 'number' ? text : text.length;
     return (characters / 1_000_000) * this.costPer1MChars;
   }
 
@@ -116,7 +116,7 @@ export class OpenAIProvider implements TTSProvider {
   ) {
     this.metrics.totalRequests++;
     this.metrics.totalCharacters += characters;
-    this.metrics.totalCost += this.estimateCost(characters.toString());
+    this.metrics.totalCost += this.estimateCost(characters);
 
     // Update average latency
     const prevTotal = this.metrics.averageLatency * (this.metrics.totalRequests - 1);

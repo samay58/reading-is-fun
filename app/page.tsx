@@ -1,12 +1,35 @@
 'use client';
 
 import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Upload } from '@/components/Upload';
 import { Preview } from '@/components/Preview';
 import { Player } from '@/components/Player';
 import { StreamingPlayer } from '@/components/StreamingPlayer';
-import { FileAudio, Zap } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
+import { fadeUp, fadeIn, transition } from '@/lib/motion';
 import type { ProcessingResult } from '@/lib/types';
+
+// Custom Phoenix Voice icon - elegant waveform
+function PhoenixIcon({ size = 48 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 48 48"
+      fill="none"
+      style={{ color: 'var(--muted)' }}
+    >
+      {/* Sound wave bars */}
+      <rect x="8" y="20" width="3" height="8" rx="1.5" fill="currentColor" opacity="0.5" />
+      <rect x="14" y="14" width="3" height="20" rx="1.5" fill="currentColor" opacity="0.7" />
+      <rect x="20" y="8" width="3" height="32" rx="1.5" fill="currentColor" />
+      <rect x="26" y="12" width="3" height="24" rx="1.5" fill="currentColor" opacity="0.8" />
+      <rect x="32" y="16" width="3" height="16" rx="1.5" fill="currentColor" opacity="0.6" />
+      <rect x="38" y="20" width="3" height="8" rx="1.5" fill="currentColor" opacity="0.4" />
+    </svg>
+  );
+}
 
 export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
@@ -27,18 +50,12 @@ export default function Home() {
       try {
         const res = await fetch(`/api/process/${id}`, { method: 'POST' });
         const data = await res.json();
-
         if (!res.ok || data.status === 'failed') {
           throw new Error(data.error || 'Processing failed');
         }
-
         setResult(data);
       } catch (err: any) {
-        setResult({
-          jobId: id,
-          status: 'failed',
-          error: err.message,
-        });
+        setResult({ jobId: id, status: 'failed', error: err.message });
       } finally {
         setProcessing(false);
       }
@@ -54,144 +71,211 @@ export default function Home() {
   }
 
   return (
-    <main className="container">
-      <div className="mt-12 mb-8">
+    <main
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '2rem',
+      }}
+    >
+      <div style={{ width: '100%', maxWidth: '26rem' }}>
         {/* Header */}
-        <div className="text-center mb-8">
-          <div className="flex justify-center mb-4">
-            <FileAudio className="w-12 h-12" strokeWidth={1} />
+        <motion.header
+          style={{ textAlign: 'center', marginBottom: '2.5rem' }}
+          initial="initial"
+          animate="animate"
+          variants={fadeUp}
+        >
+          <div style={{ marginBottom: '1rem' }}>
+            <PhoenixIcon size={48} />
           </div>
-
-          <h1 className="mb-4">PDF to Voice</h1>
-          <p className="text-lg text-muted">
-            Transform documents into premium audio experiences
+          <h1
+            style={{
+              fontSize: '1.75rem',
+              fontWeight: 600,
+              letterSpacing: '-0.02em',
+              marginBottom: '0.5rem',
+            }}
+          >
+            Phoenix Voice
+          </h1>
+          <p style={{ color: 'var(--muted)', fontSize: '1rem' }}>
+            Transform documents into natural audio
           </p>
-
-          {/* Streaming Toggle */}
-          <div className="mt-6 flex justify-center">
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useStreaming}
-                onChange={(e) => setUseStreaming(e.target.checked)}
-                className="sr-only"
-              />
-              <div className={`
-                relative w-12 h-6 rounded-full transition-colors
-                ${useStreaming ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}
-              `}>
-                <div className={`
-                  absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform
-                  ${useStreaming ? 'translate-x-6' : 'translate-x-0'}
-                `} />
-              </div>
-              <span className="text-sm font-medium flex items-center gap-2">
-                {useStreaming && <Zap className="w-4 h-4" />}
-                {useStreaming ? 'Streaming enabled' : 'Standard mode'}
-              </span>
-            </label>
-          </div>
-        </div>
+        </motion.header>
 
         {/* Main Content */}
-        <div className="max-w-2xl mx-auto">
+        <AnimatePresence mode="wait">
+          {/* Upload State */}
           {!jobId && !processing && !result && (
-            <Upload onUpload={handleUpload} />
+            <motion.div
+              key="upload"
+              initial="initial"
+              animate="animate"
+              exit={{ opacity: 0, y: -10 }}
+              variants={fadeUp}
+            >
+              <Upload onUpload={handleUpload} />
+            </motion.div>
           )}
 
+          {/* Streaming Player */}
           {useStreaming && jobId && fileName && file && (
-            <StreamingPlayer
-              documentId={jobId}
-              fileName={fileName}
-              file={file}
-              onReset={reset}
-            />
+            <motion.div
+              key="streaming-player"
+              initial="initial"
+              animate="animate"
+              exit={{ opacity: 0 }}
+              variants={fadeIn}
+            >
+              <StreamingPlayer
+                documentId={jobId}
+                fileName={fileName}
+                file={file}
+                onReset={reset}
+              />
+            </motion.div>
           )}
 
+          {/* Standard Processing */}
           {!useStreaming && processing && (
-            <div className="card">
-              <div className="flex flex-col items-center gap-6">
-                <div className="spinner" />
-                <div className="text-center">
-                  <p className="text-lg font-medium mb-2">
-                    Processing {fileName}
-                  </p>
-                  <p className="text-sm text-muted">
-                    Extracting text → Summarizing tables → Generating audio
-                  </p>
-                  <p className="text-xs text-muted mt-4">
-                    Usually takes 30-60 seconds for 10-20 pages
-                  </p>
-                </div>
-              </div>
-            </div>
+            <motion.div
+              key="processing"
+              className="card"
+              style={{ textAlign: 'center', padding: '3rem 2rem' }}
+              initial="initial"
+              animate="animate"
+              exit={{ opacity: 0 }}
+              variants={fadeIn}
+            >
+              <div className="spinner" style={{ margin: '0 auto 1rem' }} />
+              <p style={{ fontWeight: 500, marginBottom: '0.375rem' }}>
+                Processing {fileName}
+              </p>
+              <p style={{ fontSize: '0.875rem', color: 'var(--muted)' }}>
+                This usually takes 30-60 seconds
+              </p>
+            </motion.div>
           )}
 
+          {/* Standard Result */}
           {!useStreaming && result && result.status === 'complete' && (
-            <div className="space-y-6">
+            <motion.div
+              key="result"
+              style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}
+              initial="initial"
+              animate="animate"
+              exit={{ opacity: 0 }}
+              variants={fadeUp}
+            >
               <div className="card">
-                <div className="flex justify-between items-start mb-6">
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    marginBottom: '1.5rem',
+                  }}
+                >
                   <div>
-                    <h2 className="mb-1">{fileName}</h2>
-                    <p className="text-sm text-muted">Ready to listen</p>
+                    <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.25rem' }}>
+                      {fileName}
+                    </h2>
+                    <p style={{ fontSize: '0.875rem', color: 'var(--muted)' }}>
+                      Ready to listen
+                    </p>
                   </div>
-                  <button onClick={reset} className="text-sm">
-                    ← Convert another
+                  <button
+                    onClick={reset}
+                    style={{
+                      fontSize: '0.875rem',
+                      color: 'var(--muted)',
+                      background: 'none',
+                      border: 'none',
+                      padding: 0,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    New file
                   </button>
                 </div>
-
-                {result.preview && result.tableCount !== undefined && result.pageCount && result.cost && (
-                  <Preview
-                    text={result.preview}
-                    tableCount={result.tableCount}
-                    pageCount={result.pageCount}
-                    cost={result.cost}
-                    stats={result.stats}
-                  />
-                )}
+                {result.preview &&
+                  result.tableCount !== undefined &&
+                  result.pageCount &&
+                  result.cost && (
+                    <Preview
+                      text={result.preview}
+                      tableCount={result.tableCount}
+                      pageCount={result.pageCount}
+                      cost={result.cost}
+                      stats={result.stats}
+                    />
+                  )}
               </div>
-
               {result.audioUrl && result.downloadUrl && (
-                <Player
-                  audioUrl={result.audioUrl}
-                  downloadUrl={result.downloadUrl}
-                />
+                <Player audioUrl={result.audioUrl} downloadUrl={result.downloadUrl} />
               )}
-            </div>
+            </motion.div>
           )}
 
+          {/* Error State */}
           {!useStreaming && result && result.status === 'failed' && (
-            <div className="card border-[var(--error)]">
-              <div className="text-center">
-                <div className="text-5xl mb-4">⚠️</div>
-                <h2 className="mb-3">Processing Failed</h2>
-                <p className="text-muted mb-6">
-                  {result.error || 'An error occurred while processing your PDF'}
-                </p>
-                <button onClick={reset} className="primary">
-                  Try Another PDF
-                </button>
+            <motion.div
+              key="error"
+              className="card"
+              style={{ borderColor: 'var(--error)' }}
+              initial="initial"
+              animate="animate"
+              exit={{ opacity: 0 }}
+              variants={fadeUp}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+                <AlertCircle
+                  style={{
+                    width: '1.25rem',
+                    height: '1.25rem',
+                    color: 'var(--error)',
+                    flexShrink: 0,
+                    marginTop: '2px',
+                  }}
+                />
+                <div>
+                  <p style={{ fontWeight: 500, marginBottom: '0.375rem' }}>
+                    Processing failed
+                  </p>
+                  <p style={{ fontSize: '0.875rem', color: 'var(--muted)', marginBottom: '1rem' }}>
+                    {result.error || 'An error occurred'}
+                  </p>
+                  <button onClick={reset} className="primary" style={{ fontSize: '0.875rem' }}>
+                    Try again
+                  </button>
+                </div>
               </div>
-            </div>
+            </motion.div>
           )}
-        </div>
-
-        {/* Footer */}
-        <div className="mt-16 text-center text-sm text-muted">
-          <p className="font-medium">v0.6 • Premium Audio Generation</p>
-          <p className="mt-2">
-            {useStreaming
-              ? 'Progressive streaming for instant playback'
-              : 'High-quality batch processing'}
-          </p>
-          <p className="text-xs mt-2">
-            DeepSeek OCR • Claude Intelligence • OpenAI Voice
-          </p>
-          <p className="text-xs">
-            Maximum 40 pages • Files auto-delete after 1 hour
-          </p>
-        </div>
+        </AnimatePresence>
       </div>
+
+      {/* Footer */}
+      <motion.footer
+        style={{
+          position: 'fixed',
+          bottom: '1.5rem',
+          left: 0,
+          right: 0,
+          textAlign: 'center',
+          fontSize: '0.75rem',
+          color: 'var(--faint)',
+        }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ ...transition, delay: 0.3 }}
+      >
+        Files auto-delete after 1 hour
+      </motion.footer>
     </main>
   );
 }
