@@ -80,13 +80,14 @@ export function buildTTSConfig(providerPref: string): TTSProviderConfig {
     };
   }
 
-  // ARCHIVED: Old providers removed 2025-11
-  // if (process.env.HATHORA_API_KEY) {
-  //   config.hathora = { apiKey: process.env.HATHORA_API_KEY, ... };
-  // }
-  // if (process.env.INWORLD_API_KEY) {
-  //   config.inworld = { apiKey: process.env.INWORLD_API_KEY, ... };
-  // }
+  // Inworld TTS ($10/M) - Re-enabled 2026-02
+  const includeInworld = pref === 'auto' || pref === 'inworld';
+  if (includeInworld && process.env.INWORLD_API_KEY && process.env.INWORLD_WORKSPACE_ID) {
+    config.inworld = {
+      apiKey: process.env.INWORLD_API_KEY,
+      workspaceId: process.env.INWORLD_WORKSPACE_ID,
+    };
+  }
 
   return config;
 }
@@ -128,8 +129,8 @@ export async function generateAudio(
   // Decide whether to use new manager or legacy implementation
   // Use manager for all new providers or auto mode
   const useManager = provider !== 'openai' &&
-    (provider === 'deepinfra' || provider === 'orpheus' || provider === 'minimax' || provider === 'auto' ||
-     process.env.DEEPINFRA_API_KEY || process.env.TOGETHER_API_KEY || process.env.MINIMAX_API_KEY);
+    (provider === 'deepinfra' || provider === 'orpheus' || provider === 'minimax' || provider === 'inworld' || provider === 'auto' ||
+     process.env.DEEPINFRA_API_KEY || process.env.TOGETHER_API_KEY || process.env.MINIMAX_API_KEY || process.env.INWORLD_API_KEY);
 
   if (useManager) {
     // Use new TTS Manager for cost optimization
@@ -375,12 +376,14 @@ export function getCostComparison(text: string): Record<string, number> {
   const charCount = text.length;
 
   const deepinfraCost = (charCount / 1_000_000) * 0.62;
+  const inworldCost = (charCount / 1_000_000) * 10;
   const orpheusCost = (charCount / 1_000_000) * 15;
   const minimaxCost = (charCount / 1_000_000) * 30;
   const openaiCost = (charCount / 1_000_000) * 30;
 
   return {
     deepinfra: deepinfraCost,
+    inworld: inworldCost,
     orpheus: orpheusCost,
     minimax: minimaxCost,
     openai_hd: openaiCost,

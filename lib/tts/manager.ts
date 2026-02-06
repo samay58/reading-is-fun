@@ -10,16 +10,13 @@ import {
   TTSError,
   TTSQualityMetrics
 } from './types';
-// ARCHIVED: Old providers moved to _deprecated/
-// import { HathoraProvider } from './providers/hathora';
-// import { InworldProvider } from './providers/inworld';
-
 // New provider chain (2025-11 migration)
 import { DeepInfraProvider } from './providers/deepinfra';
 import { OrpheusProvider } from './providers/orpheus';
 import { MiniMaxProvider } from './providers/minimax';
 import { OpenAIProvider } from './providers/openai';
 import { SesameProvider } from './providers/sesame';
+import { InworldProvider } from './providers/inworld';
 
 export class TTSManager {
   private providers: TTSProvider[] = [];
@@ -61,13 +58,10 @@ export class TTSManager {
       this.providers.push(new OpenAIProvider(this.config.openai));
     }
 
-    // ARCHIVED: Old providers (Hathora, Inworld) removed 2025-11
-    // if (this.config.hathora) {
-    //   this.providers.push(new HathoraProvider(this.config.hathora));
-    // }
-    // if (this.config.inworld) {
-    //   this.providers.push(new InworldProvider(this.config.inworld));
-    // }
+    // Inworld TTS ($10/M) - Re-enabled 2026-02
+    if (this.config.inworld) {
+      this.providers.push(new InworldProvider(this.config.inworld));
+    }
 
     // Sort by priority (lower number = higher priority)
     this.providers.sort((a, b) => a.priority - b.priority);
