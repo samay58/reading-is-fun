@@ -1,8 +1,6 @@
 import { basename } from 'path';
 import { readFile } from 'fs/promises';
 import { extractPdfWithDeepInfra } from './deepinfra-ocr';
-// @ts-expect-error pdf-parse has no type declarations
-import pdfParse from 'pdf-parse';
 
 const DEEPSEEK_API_URL = 'https://api.alphaxiv.org/models/v1/deepseek/deepseek-ocr/inference';
 
@@ -91,10 +89,12 @@ async function extractWithPdfParse(pdfPath: string): Promise<{
 
   try {
     const dataBuffer = await readFile(pdfPath);
-    const data = await pdfParse(dataBuffer);
+    const { PDFParse } = await import('pdf-parse');
+    const parser = new PDFParse({ data: new Uint8Array(dataBuffer) });
+    const result = await parser.getText();
 
-    const cleanText = data.text?.trim() || '';
-    const pageCount = data.numpages || 1;
+    const cleanText = result.text?.trim() || '';
+    const pageCount = result.total || 1;
 
     if (!cleanText || cleanText.length < 50) {
       throw new Error('pdf-parse returned insufficient text');
@@ -112,7 +112,7 @@ export async function extractPDF(pdfPath: string, maxRetries = 3): Promise<{
   markdown: string;
   pageCount: number;
 }> {
-  // Try DeepInfra first (handles scanned PDFs with OCR)
+  // 1. Try DeepInfra OCR (best quality, needs pdftoppm locally)
   if (process.env.DEEPINFRA_API_KEY) {
     try {
       console.log('[DeepInfra] Using DeepSeek-OCR via DeepInfra (primary)');
@@ -121,15 +121,27 @@ export async function extractPDF(pdfPath: string, maxRetries = 3): Promise<{
       if (result.markdown?.trim()) {
         return result;
       }
-      console.warn('[DeepInfra] Returned empty text, trying fallback...');
+      console.warn('[DeepInfra] Returned empty text, trying next fallback...');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      console.warn(`[DeepInfra] OCR failed: ${message}, trying pdf-parse fallback...`);
+      console.warn(`[DeepInfra] OCR failed: ${message}, trying DeepSeek alphaxiv...`);
     }
-  } else {
-    console.warn('[DeepInfra] API key not set, using pdf-parse directly');
   }
 
-  // Fallback to pdf-parse (works for text-based PDFs, not scanned images)
+  // 2. Try DeepSeek alphaxiv API (no local binaries needed, works on Vercel)
+  try {
+    console.log('[DeepSeek] Using alphaxiv API (fallback, no local binaries)');
+    const result = await extractWithDeepSeek(pdfPath, maxRetries);
+
+    if (result.markdown?.trim()) {
+      return result;
+    }
+    console.warn('[DeepSeek] Returned empty text, trying pdf-parse...');
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.warn(`[DeepSeek] alphaxiv failed: ${message}, trying pdf-parse...`);
+  }
+
+  // 3. Fallback to pdf-parse (pure JS, works everywhere for text-based PDFs)
   return extractWithPdfParse(pdfPath);
 }
