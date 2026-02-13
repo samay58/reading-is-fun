@@ -1,13 +1,10 @@
 import { basename } from 'path';
 import { readFile } from 'fs/promises';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { extractPdfWithDeepInfra } from './deepinfra-ocr';
+// @ts-expect-error pdf-parse has no type declarations
+import pdfParse from 'pdf-parse';
 
-const execAsync = promisify(exec);
 const DEEPSEEK_API_URL = 'https://api.alphaxiv.org/models/v1/deepseek/deepseek-ocr/inference';
-const PDFTOTEXT_BIN = process.env.PDFTOTEXT_PATH || '/opt/homebrew/opt/poppler-qt5/bin/pdftotext';
-const PDFINFO_BIN = process.env.PDFINFO_PATH || '/opt/homebrew/opt/poppler-qt5/bin/pdfinfo';
 
 async function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -84,38 +81,30 @@ async function extractWithDeepSeek(pdfPath: string, maxRetries = 3): Promise<{
 }
 
 /**
- * Fallback extraction using poppler's pdftotext (works for text-based PDFs)
+ * Fallback extraction using pdf-parse (pure JS, works on Vercel)
  */
-async function extractWithPdftotext(pdfPath: string): Promise<{
+async function extractWithPdfParse(pdfPath: string): Promise<{
   markdown: string;
   pageCount: number;
 }> {
-  console.log('[pdftotext] Attempting fallback text extraction...');
+  console.log('[pdf-parse] Attempting fallback text extraction...');
 
   try {
-    // Extract text with layout preservation
-    const { stdout: text } = await execAsync(`"${PDFTOTEXT_BIN}" -layout "${pdfPath}" -`, {
-      maxBuffer: 50 * 1024 * 1024,
-    });
+    const dataBuffer = await readFile(pdfPath);
+    const data = await pdfParse(dataBuffer);
 
-    // Get page count
-    const { stdout: pdfinfo } = await execAsync(`"${PDFINFO_BIN}" "${pdfPath}"`, {
-      maxBuffer: 1024 * 1024,
-    }).catch(() => ({ stdout: '' }));
+    const cleanText = data.text?.trim() || '';
+    const pageCount = data.numpages || 1;
 
-    const pageMatch = pdfinfo.match(/Pages:\s*(\d+)/);
-    const pageCount = pageMatch ? parseInt(pageMatch[1], 10) : 1;
-
-    const cleanText = text.trim();
     if (!cleanText || cleanText.length < 50) {
-      throw new Error('pdftotext returned insufficient text');
+      throw new Error('pdf-parse returned insufficient text');
     }
 
-    console.log(`[pdftotext] Success: ${pageCount} pages, ${cleanText.length} chars`);
+    console.log(`[pdf-parse] Success: ${pageCount} pages, ${cleanText.length} chars`);
     return { markdown: cleanText, pageCount };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    throw new Error(`pdftotext fallback failed: ${message}`);
+    throw new Error(`pdf-parse fallback failed: ${message}`);
   }
 }
 
@@ -135,12 +124,12 @@ export async function extractPDF(pdfPath: string, maxRetries = 3): Promise<{
       console.warn('[DeepInfra] Returned empty text, trying fallback...');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      console.warn(`[DeepInfra] OCR failed: ${message}, trying pdftotext fallback...`);
+      console.warn(`[DeepInfra] OCR failed: ${message}, trying pdf-parse fallback...`);
     }
   } else {
-    console.warn('[DeepInfra] API key not set, using pdftotext directly');
+    console.warn('[DeepInfra] API key not set, using pdf-parse directly');
   }
 
-  // Fallback to pdftotext (works for text-based PDFs, not scanned images)
-  return extractWithPdftotext(pdfPath);
+  // Fallback to pdf-parse (works for text-based PDFs, not scanned images)
+  return extractWithPdfParse(pdfPath);
 }
